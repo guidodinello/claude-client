@@ -34,5 +34,6 @@ known-first-party = ["claude_client"]
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4.6.0",
     "ruff>=0.15.12",
 ]
