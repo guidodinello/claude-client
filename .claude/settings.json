@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /home/guido/projects/claude-client && uv run ruff check --fix \"$CLAUDE_TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$CLAUDE_TOOL_INPUT_FILE_PATH\" | grep -qE '\\.env$'; then echo 'Blocked: do not edit .env files' >&2; exit 1; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
