@@ -1,4 +1,5 @@
 """Quick usage demo — not part of the library itself."""
+
 from claude_client import ClaudeClient
 
 

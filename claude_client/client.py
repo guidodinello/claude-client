@@ -28,9 +28,7 @@ class ClaudeClient:
     def __init__(self, session_token: str | None = None) -> None:
         token = session_token or os.getenv("CLAUDE_SESSION_TOKEN")
         if not token:
-            raise ValueError(
-                "Session token required. Pass it or set CLAUDE_SESSION_TOKEN."
-            )
+            raise ValueError("Session token required. Pass it or set CLAUDE_SESSION_TOKEN.")
         self._cookie = f"sessionKey={token}"
 
     # ------------------------------------------------------------------ auth
@@ -82,8 +80,7 @@ class ClaudeClient:
     def _check_auth(self, resp: requests.Response) -> None:
         if resp.status_code in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
             raise AuthError(
-                "Session token is invalid or expired. "
-                "Refresh CLAUDE_SESSION_TOKEN from claude.ai."
+                "Session token is invalid or expired. Refresh CLAUDE_SESSION_TOKEN from claude.ai."
             )
 
     # ------------------------------------------------------- org / projects
@@ -102,9 +99,7 @@ class ClaudeClient:
         return resp.json()
 
     def get_project(self, project_id: str) -> ProjectDict:
-        resp = self._get(
-            f"{BASE_URL}/organizations/{self.org_id}/projects/{project_id}"
-        )
+        resp = self._get(f"{BASE_URL}/organizations/{self.org_id}/projects/{project_id}")
         return resp.json()
 
     def find_project(self, name: str) -> ProjectDict:
@@ -117,9 +112,7 @@ class ClaudeClient:
     # ----------------------------------------------------------------- docs
 
     def list_docs(self, project_id: str) -> list[DocDict]:
-        resp = self._get(
-            f"{BASE_URL}/organizations/{self.org_id}/projects/{project_id}/docs"
-        )
+        resp = self._get(f"{BASE_URL}/organizations/{self.org_id}/projects/{project_id}/docs")
         return resp.json()
 
     def get_doc(self, project_id: str, doc_uuid: str) -> DocDict:
@@ -133,9 +126,7 @@ class ClaudeClient:
         url = f"{BASE_URL}/organizations/{self.org_id}/projects/{project_id}/docs"
         resp = self._post(url, {"file_name": file_name, "content": content})
         if resp.status_code != HTTPStatus.CREATED:
-            raise UploadError(
-                f"Upload of '{file_name}' failed: {resp.status_code} {resp.text}"
-            )
+            raise UploadError(f"Upload of '{file_name}' failed: {resp.status_code} {resp.text}")
         return resp.json()
 
     def upload_file(
@@ -161,9 +152,7 @@ class ClaudeClient:
 
     # ----------------------------------------------------------------- sync
 
-    def upsert_content(
-        self, project_id: str, content: str, file_name: str
-    ) -> DocDict:
+    def upsert_content(self, project_id: str, content: str, file_name: str) -> DocDict:
         """Upload content, replacing any existing doc with the same name."""
         for doc in self.list_docs(project_id):
             if doc.get("file_name") == file_name:
@@ -233,9 +222,7 @@ class ClaudeClient:
 
     def get_memory(self, project_id: str) -> MemoryDict:
         """Fetch the auto-generated project memory and controls."""
-        resp = self._get(
-            f"{BASE_URL}/organizations/{self.org_id}/memory?project_uuid={project_id}"
-        )
+        resp = self._get(f"{BASE_URL}/organizations/{self.org_id}/memory?project_uuid={project_id}")
         return resp.json()
 
     # --------------------------------------------------------------- export
@@ -299,9 +286,7 @@ class ClaudeClient:
             written.append(dest)
         return written
 
-    def sync_from_web(
-        self, project_id: str, local_dir: str | Path
-    ) -> dict[str, str]:
+    def sync_from_web(self, project_id: str, local_dir: str | Path) -> dict[str, str]:
         """
         Sync knowledge docs from the web project to a local directory.
 

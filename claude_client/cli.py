@@ -18,6 +18,7 @@ def _client(args: argparse.Namespace) -> ClaudeClient:
 
 # ------------------------------------------------------------------ projects
 
+
 def _projects_list(args: argparse.Namespace) -> None:
     client = _client(args)
     projects = client.list_projects()
@@ -29,6 +30,7 @@ def _projects_list(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------- docs
+
 
 def _docs_list(args: argparse.Namespace) -> None:
     client = _client(args)
@@ -75,6 +77,7 @@ def _docs_sync(args: argparse.Namespace) -> None:
 
 # ------------------------------------------------------------------- export
 
+
 def _export(args: argparse.Namespace) -> None:
     client = _client(args)
     out = client.export_project_to_file(args.project_id, args.output_file)
@@ -82,6 +85,7 @@ def _export(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------- arg parsing
+
 
 def _build_parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(

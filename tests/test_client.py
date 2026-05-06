@@ -89,6 +89,7 @@ def test_upload_content_success(mock_req, client):
     assert doc["uuid"] == DOC_UUID
     call_kwargs = mock_req.post.call_args
     import json
+
     payload = json.loads(call_kwargs.kwargs["data"])
     assert payload["file_name"] == "notes.md"
     assert payload["content"] == "hello world"
@@ -115,9 +116,9 @@ def test_delete_doc(mock_req, client):
 @patch("claude_client.client.requests")
 def test_upsert_content_replaces_existing(mock_req, client):
     mock_req.get.side_effect = [
-        _mock_response(ORGS_RESPONSE),     # org_id
-        _mock_response([DOC_META]),         # list_docs
-        _mock_response(ORGS_RESPONSE),     # org_id cached — skip (cached_property)
+        _mock_response(ORGS_RESPONSE),  # org_id
+        _mock_response([DOC_META]),  # list_docs
+        _mock_response(ORGS_RESPONSE),  # org_id cached — skip (cached_property)
     ]
     mock_req.delete.return_value = _mock_response(None, status_code=204)
     mock_req.post.return_value = _mock_response({**DOC_FULL}, status_code=201)
@@ -150,8 +151,8 @@ def test_check_auth_raises_on_403(mock_req, client):
 def test_download_docs(mock_req, client, tmp_path):
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),  # org_id
-        _mock_response([DOC_META]),     # list_docs
-        _mock_response(DOC_FULL),       # get_doc
+        _mock_response([DOC_META]),  # list_docs
+        _mock_response(DOC_FULL),  # get_doc
     ]
 
     written = client.download_docs(PROJECT_ID, tmp_path)
