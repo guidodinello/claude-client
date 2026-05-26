@@ -92,5 +92,5 @@ class ProjectExport:
     instructions: str
     memory: str = ""
     controls: list[str] = field(default_factory=list)
-    docs: list[dict] = field(default_factory=list)
-    conversations: list[dict] = field(default_factory=list)
+    docs: list[DocDict] = field(default_factory=list)
+    conversations: list[ConversationDetailDict] = field(default_factory=list)

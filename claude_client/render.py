@@ -2,12 +2,12 @@
 
 import re
 
-from .models import ProjectExport
+from .models import ChatMessageDict, ConversationDetailDict, MessageContentDict, ProjectExport
 
 ROOT_MESSAGE_UUID = "00000000-0000-4000-8000-000000000000"
 
 
-def conversation_to_markdown(conv: dict) -> str:
+def conversation_to_markdown(conv: ConversationDetailDict) -> str:
     """Render a conversation detail dict as markdown, showing all branches."""
     lines: list[str] = []
 
@@ -24,17 +24,17 @@ def conversation_to_markdown(conv: dict) -> str:
     if not messages:
         return "\n".join(lines)
 
-    def find_roots() -> list[dict]:
+    def find_roots() -> list[ChatMessageDict]:
         roots = []
         for m in messages:
             if m.get("parent_message_uuid") == ROOT_MESSAGE_UUID:
                 roots.append(m)
         return roots
 
-    def find_all_paths(start: dict) -> list[list[dict]]:
-        paths: list[list[dict]] = []
+    def find_all_paths(start: ChatMessageDict) -> list[list[ChatMessageDict]]:
+        paths: list[list[ChatMessageDict]] = []
 
-        def dfs(node: dict, path: list[dict]) -> None:
+        def dfs(node: ChatMessageDict, path: list[ChatMessageDict]) -> None:
             path.append(node)
             children = [m for m in messages if m.get("parent_message_uuid") == node["uuid"]]
 
@@ -47,7 +47,7 @@ def conversation_to_markdown(conv: dict) -> str:
         dfs(start, [])
         return paths
 
-    def format_content(content_list: list[dict]) -> str:
+    def format_content(content_list: list[MessageContentDict]) -> str:
         parts = []
         for c in content_list:
             match c.get("type"):
@@ -100,7 +100,7 @@ def conversation_to_markdown(conv: dict) -> str:
     return "\n".join(lines)
 
 
-def conversation_filename(conv: dict) -> str:
+def conversation_filename(conv: ConversationDetailDict) -> str:
     """Generate a sanitized filename from conversation name."""
 
     def simplify(s: str) -> str:
