@@ -7,6 +7,7 @@ from pathlib import Path
 
 from curl_cffi import requests
 from logger import get_logger
+from rich.progress import Progress, SpinnerColumn, TextColumn, track
 
 from .exceptions import AuthError, NotFoundError, UploadError
 from .models import (
@@ -260,7 +261,9 @@ class ClaudeClient:
         out.mkdir(parents=True, exist_ok=True)
 
         written: list[Path] = []
-        for conv_meta in self.list_all_conversations(project_id):
+        for conv_meta in track(
+            self.list_all_conversations(project_id), description="Exporting conversations…"
+        ):
             try:
                 conv = self.get_conversation(project_id, conv_meta["uuid"])
                 content = conversation_to_markdown(conv)
@@ -283,7 +286,9 @@ class ClaudeClient:
         out.mkdir(parents=True, exist_ok=True)
 
         results: dict[str, str] = {}
-        for conv_meta in self.list_all_conversations(project_id):
+        for conv_meta in track(
+            self.list_all_conversations(project_id), description="Syncing conversations…"
+        ):
             try:
                 conv = self.get_conversation(project_id, conv_meta["uuid"])
             except Exception:
@@ -367,7 +372,11 @@ class ClaudeClient:
 
     def export_project_to_file(self, project_id: str, output_path: str | Path) -> Path:
         """Export a project to a markdown file. Returns the output path."""
-        export = self.export_project(project_id)
+        with Progress(
+            SpinnerColumn(), TextColumn("{task.description}"), transient=True
+        ) as progress:
+            progress.add_task("Exporting project…")
+            export = self.export_project(project_id)
         out = Path(output_path)
         if out.is_dir():
             out = out / f"{project_id}.md"
@@ -385,7 +394,7 @@ class ClaudeClient:
 
         docs_meta = self.list_docs(project_id)
         written: list[Path] = []
-        for meta in docs_meta:
+        for meta in track(docs_meta, description="Downloading docs…"):
             try:
                 doc = self.get_doc(project_id, meta["uuid"])
             except Exception:
@@ -408,7 +417,7 @@ class ClaudeClient:
 
         docs_meta = self.list_docs(project_id)
         results: dict[str, str] = {}
-        for meta in docs_meta:
+        for meta in track(docs_meta, description="Syncing docs…"):
             try:
                 doc = self.get_doc(project_id, meta["uuid"])
             except Exception:

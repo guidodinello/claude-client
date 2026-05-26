@@ -72,6 +72,7 @@ source = { editable = "." }
 dependencies = [
     { name = "curl-cffi" },
     { name = "logger" },
+    { name = "rich" },
 ]
 
 [package.optional-dependencies]
@@ -91,6 +92,7 @@ requires-dist = [
     { name = "curl-cffi", specifier = ">=0.7" },
     { name = "logger", directory = "../logger" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "rich", specifier = ">=15.0.0" },
 ]
 provides-extras = ["dev"]
 
