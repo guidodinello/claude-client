@@ -23,6 +23,12 @@ from .render import conversation_filename, conversation_to_markdown, render_proj
 logger = get_logger(__name__)
 
 BASE_URL = "https://claude.ai/api"
+
+
+def _ensure_md(name: str) -> str:
+    return name if name.endswith(".md") else f"{name}.md"
+
+
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
@@ -363,6 +369,8 @@ class ClaudeClient:
         """Export a project to a markdown file. Returns the output path."""
         export = self.export_project(project_id)
         out = Path(output_path)
+        if out.is_dir():
+            out = out / f"{project_id}.md"
         out.write_text(render_project(export), encoding="utf-8")
         return out
 
@@ -382,7 +390,7 @@ class ClaudeClient:
                 doc = self.get_doc(project_id, meta["uuid"])
             except Exception:
                 doc = meta
-            name = doc.get("file_name", doc["uuid"])
+            name = _ensure_md(doc.get("file_name", doc["uuid"]))
             dest = out / name
             dest.write_text(doc.get("content", ""), encoding="utf-8")
             written.append(dest)
@@ -405,7 +413,7 @@ class ClaudeClient:
                 doc = self.get_doc(project_id, meta["uuid"])
             except Exception:
                 doc = meta
-            name = doc.get("file_name", doc["uuid"])
+            name = _ensure_md(doc.get("file_name", doc["uuid"]))
             content = doc.get("content", "")
             dest = out / name
             if dest.exists():
