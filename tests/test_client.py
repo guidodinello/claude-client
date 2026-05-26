@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from claude_client import AuthError, ClaudeClient, NotFoundError, UploadError
+from claude_client.render import conversation_to_markdown
 
 ORG_ID = "org-uuid"
 PROJECT_ID = "proj-uuid"
@@ -205,3 +206,191 @@ def test_sync_from_web_updated(mock_req, client, tmp_path):
 
     assert results["notes.md"] == "updated"
     assert (tmp_path / "notes.md").read_text() == "hello world"
+
+
+CONV_UUID = "conv-uuid"
+CONVERSATION_META = [
+    {
+        "uuid": CONV_UUID,
+        "name": "Test Chat",
+        "summary": "",
+        "model": "claude-sonnet-4-20250514",
+        "created_at": "2024-01-01",
+        "updated_at": "2024-01-02",
+        "is_starred": False,
+        "is_temporary": False,
+        "project_uuid": PROJECT_ID,
+        "current_leaf_message_uuid": "leaf-uuid",
+    }
+]
+
+CONV_PAGE_RESPONSE = {
+    "data": CONVERSATION_META,
+    "pagination": {"total": 1, "limit": 30, "offset": 0, "has_more": False},
+}
+CONVERSATION_DETAIL = {
+    "uuid": CONV_UUID,
+    "name": "Test Chat",
+    "summary": "",
+    "model": "claude-sonnet-4-20250514",
+    "created_at": "2024-01-01T10:00:00Z",
+    "updated_at": "2024-01-02T11:00:00Z",
+    "current_leaf_message_uuid": "leaf-uuid",
+    "chat_messages": [
+        {
+            "uuid": "root-uuid",
+            "sender": "human",
+            "content": [{"type": "text", "text": "Hello"}],
+            "parent_message_uuid": "00000000-0000-4000-8000-000000000000",
+            "index": 0,
+            "created_at": "2024-01-01T10:00:00Z",
+            "updated_at": "2024-01-01T10:00:00Z",
+        },
+        {
+            "uuid": "leaf-uuid",
+            "sender": "assistant",
+            "content": [{"type": "text", "text": "Hi there!"}],
+            "parent_message_uuid": "root-uuid",
+            "index": 1,
+            "created_at": "2024-01-01T10:01:00Z",
+            "updated_at": "2024-01-01T10:01:00Z",
+        },
+    ],
+}
+
+
+@patch("claude_client.client.requests")
+def test_get_conversation(mock_req, client):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+
+    conv = client.get_conversation(PROJECT_ID, CONV_UUID)
+
+    assert conv["uuid"] == CONV_UUID
+    assert len(conv["chat_messages"]) == 2
+
+
+@patch("claude_client.client.requests")
+def test_list_all_conversations(mock_req, client):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(CONV_PAGE_RESPONSE),
+    ]
+
+    convs = client.list_all_conversations(PROJECT_ID)
+
+    assert len(convs) == 1
+    assert convs[0]["name"] == "Test Chat"
+
+
+def test_conversation_to_markdown():
+    md = conversation_to_markdown(CONVERSATION_DETAIL)
+
+    assert "### Test Chat" in md
+    assert "claude-sonnet" in md
+    assert "Human" in md
+    assert "Claude" in md
+    assert "Hello" in md
+    assert "Hi there!" in md
+
+
+def test_conversation_to_markdown_renders_tool_content():
+    conv = {
+        "uuid": "tool-conv",
+        "name": "Tool Chat",
+        "model": "claude-sonnet-4-20250514",
+        "created_at": "2024-01-01T10:00:00Z",
+        "updated_at": "2024-01-01T10:00:00Z",
+        "current_leaf_message_uuid": "msg-3",
+        "chat_messages": [
+            {
+                "uuid": "root",
+                "sender": "human",
+                "content": [{"type": "text", "text": "search the web"}],
+                "parent_message_uuid": "00000000-0000-4000-8000-000000000000",
+                "index": 0,
+                "created_at": "2024-01-01T10:00:00Z",
+                "updated_at": "2024-01-01T10:00:00Z",
+            },
+            {
+                "uuid": "msg-2",
+                "sender": "assistant",
+                "content": [
+                    {"type": "tool_use", "name": "tavily", "input": {"query": "weather"}},
+                    {"type": "text", "text": "Let me look that up"},
+                ],
+                "parent_message_uuid": "root",
+                "index": 1,
+                "created_at": "2024-01-01T10:01:00Z",
+                "updated_at": "2024-01-01T10:01:00Z",
+            },
+            {
+                "uuid": "msg-3",
+                "sender": "assistant",
+                "content": [
+                    {"type": "tool_result", "content": [{"type": "text", "text": "sunny 72°F"}]},
+                    {"type": "text", "text": "It's sunny and 72°F."},
+                ],
+                "parent_message_uuid": "msg-2",
+                "index": 2,
+                "created_at": "2024-01-01T10:02:00Z",
+                "updated_at": "2024-01-01T10:02:00Z",
+            },
+        ],
+    }
+
+    md = conversation_to_markdown(conv)
+
+    assert "[Tool: tavily]" in md
+    assert "{'query': 'weather'}" in md
+    assert "[Result]" in md
+    assert "sunny 72°F" in md
+    assert "It's sunny and 72°F." in md
+
+
+@patch("claude_client.client.requests")
+def test_sync_conversations_from_web_created(mock_req, client, tmp_path):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+
+    results = client.sync_conversations_from_web(PROJECT_ID, tmp_path)
+
+    assert len(results) == 1
+    assert "test-chat-conv-uui.md" in results
+    assert results["test-chat-conv-uui.md"] == "created"
+
+
+@patch("claude_client.client.requests")
+def test_sync_conversations_from_web_unchanged(mock_req, client, tmp_path):
+    md = conversation_to_markdown(CONVERSATION_DETAIL)
+    (tmp_path / "test-chat-conv-uui.md").write_text(md)
+
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+
+    results = client.sync_conversations_from_web(PROJECT_ID, tmp_path)
+
+    assert results["test-chat-conv-uui.md"] == "unchanged"
+
+
+@patch("claude_client.client.requests")
+def test_sync_conversations_from_web_updated(mock_req, client, tmp_path):
+    (tmp_path / "test-chat-conv-uui.md").write_text("old content")
+
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+
+    results = client.sync_conversations_from_web(PROJECT_ID, tmp_path)
+
+    assert results["test-chat-conv-uui.md"] == "updated"
