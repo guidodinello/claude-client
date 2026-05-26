@@ -10,7 +10,8 @@ Python client for the Claude.ai web API — manage projects, sync files, and exp
 - Upload, download, and delete docs
 - Upsert (upload or replace by name)
 - Sync docs from the web to a local folder
-- Export a full project to a single Markdown file (title, description, instructions, memory, docs)
+- Export a full project to a single Markdown file (title, description, instructions, memory, docs, conversations)
+- Export and sync conversations as Markdown files
 - CLI for all operations
 
 ## Installation
@@ -57,6 +58,12 @@ claude-client docs sync <project-id> ./local-docs/
 
 # Export full project to a single markdown file
 claude-client export <project-id> export.md
+
+# Conversation operations
+claude-client conversations list <project-id>
+claude-client conversations get <project-id> <conversation-id>
+claude-client conversations download <project-id> ./output/
+claude-client conversations sync <project-id> ./local-convos/
 ```
 
 ## Python usage
@@ -80,6 +87,15 @@ client.sync_files(project_id, ["a.md", "b.md"], name_prefix="MyProject__")
 
 # Export project to markdown
 client.export_project_to_file(project_id, "export.md")
+
+# Export all conversations as markdown files
+client.export_conversations_to_files(project_id, "./convos/")
+
+# Sync conversations from web (web wins, skips unchanged)
+client.sync_conversations_from_web(project_id, "./local-convos/")
+
+# Get a single conversation as markdown
+markdown = client.export_conversation_to_file(project_id, conv_id, "conv.md")
 ```
 
 ## Development
