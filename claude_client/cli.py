@@ -5,8 +5,11 @@ import os
 import sys
 from pathlib import Path
 
+from logger import init_logging
+
 from .client import ClaudeClient
 from .exceptions import AuthError, NotFoundError, UploadError
+from .render import conversation_to_markdown
 
 
 def _client(args: argparse.Namespace) -> ClaudeClient:
@@ -84,6 +87,42 @@ def _export(args: argparse.Namespace) -> None:
     print(f"Exported to {out}")
 
 
+# ----------------------------------------------------------------- conversations
+
+
+def _conversations_list(args: argparse.Namespace) -> None:
+    client = _client(args)
+    convs = client.list_all_conversations(args.project_id)
+    if not convs:
+        print("No conversations found.")
+        return
+    for c in convs:
+        print(f"{c['uuid']}  {c['name']}")
+
+
+def _conversations_get(args: argparse.Namespace) -> None:
+    client = _client(args)
+    conv = client.get_conversation(args.project_id, args.conversation_id)
+    content = conversation_to_markdown(conv)
+    print(content)
+
+
+def _conversations_download(args: argparse.Namespace) -> None:
+    client = _client(args)
+    written = client.export_conversations_to_files(args.project_id, args.output_dir)
+    for p in written:
+        print(f"  {p}")
+    print(f"Downloaded {len(written)} file(s) to {args.output_dir}")
+
+
+def _conversations_sync(args: argparse.Namespace) -> None:
+    client = _client(args)
+    results = client.sync_conversations_from_web(args.project_id, args.local_dir)
+    for name, status in results.items():
+        print(f"  [{status}] {name}")
+    print(f"Synced {len(results)} file(s).")
+
+
 # ---------------------------------------------------------------- arg parsing
 
 
@@ -140,10 +179,35 @@ def _build_parser() -> argparse.ArgumentParser:
     export.add_argument("output_file")
     export.set_defaults(func=_export)
 
+    # ---- conversations ----
+    conversations = sub.add_parser("conversations", help="Conversation operations")
+    csub = conversations.add_subparsers(dest="action", metavar="<action>")
+    csub.required = True
+
+    c_list = csub.add_parser("list", help="List conversations in a project")
+    c_list.add_argument("project_id")
+    c_list.set_defaults(func=_conversations_list)
+
+    c_get = csub.add_parser("get", help="Print a conversation as markdown")
+    c_get.add_argument("project_id")
+    c_get.add_argument("conversation_id")
+    c_get.set_defaults(func=_conversations_get)
+
+    c_download = csub.add_parser("download", help="Download all conversations to a local folder")
+    c_download.add_argument("project_id")
+    c_download.add_argument("output_dir")
+    c_download.set_defaults(func=_conversations_download)
+
+    c_sync = csub.add_parser("sync", help="Sync web conversations → local folder (web wins)")
+    c_sync.add_argument("project_id")
+    c_sync.add_argument("local_dir")
+    c_sync.set_defaults(func=_conversations_sync)
+
     return root
 
 
 def main() -> None:
+    init_logging()
     parser = _build_parser()
     args = parser.parse_args()
     try:
