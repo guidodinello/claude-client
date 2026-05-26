@@ -6,9 +6,21 @@ from http import HTTPStatus
 from pathlib import Path
 
 from curl_cffi import requests
+from logger import get_logger
 
 from .exceptions import AuthError, NotFoundError, UploadError
-from .models import ConversationDict, DocDict, MemoryDict, Page, ProjectDict, ProjectExport
+from .models import (
+    ConversationDetailDict,
+    ConversationDict,
+    DocDict,
+    MemoryDict,
+    Page,
+    ProjectDict,
+    ProjectExport,
+)
+from .render import conversation_filename, conversation_to_markdown, render_project
+
+logger = get_logger(__name__)
 
 BASE_URL = "https://claude.ai/api"
 _USER_AGENT = (
@@ -218,11 +230,89 @@ class ClaudeClient:
             offset += limit
         return results
 
+    def get_conversation(self, project_id: str, conversation_id: str) -> ConversationDetailDict:
+        """Fetch a single conversation with full message content."""
+        resp = self._get(
+            f"{BASE_URL}/organizations/{self.org_id}/chat_conversations/{conversation_id}"
+            f"?tree=True&rendering_mode=messages&render_all_tools=true&consistency=eventual"
+        )
+        return resp.json()
+
+    def export_conversation_to_file(
+        self, project_id: str, conversation_id: str, output_path: str | Path
+    ) -> Path:
+        """Export a single conversation to a markdown file."""
+        conv = self.get_conversation(project_id, conversation_id)
+        content = conversation_to_markdown(conv)
+        out = Path(output_path)
+        out.write_text(content, encoding="utf-8")
+        return out
+
+    def export_conversations_to_files(self, project_id: str, output_dir: str | Path) -> list[Path]:
+        """Export all conversations in a project to markdown files."""
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        written: list[Path] = []
+        for conv_meta in self.list_all_conversations(project_id):
+            try:
+                conv = self.get_conversation(project_id, conv_meta["uuid"])
+                content = conversation_to_markdown(conv)
+                filename = conversation_filename(conv)
+                dest = out / filename
+                dest.write_text(content, encoding="utf-8")
+                written.append(dest)
+            except Exception:
+                logger.warning("Failed to export conversation %s", conv_meta.get("uuid", "unknown"))
+        return written
+
+    def sync_conversations_from_web(self, project_id: str, local_dir: str | Path) -> dict[str, str]:
+        """
+        Sync conversations from the web project to a local directory.
+
+        Web is the source of truth. Returns a dict mapping each filename to
+        "created", "updated", or "unchanged".
+        """
+        out = Path(local_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        results: dict[str, str] = {}
+        for conv_meta in self.list_all_conversations(project_id):
+            try:
+                conv = self.get_conversation(project_id, conv_meta["uuid"])
+            except Exception:
+                logger.warning(
+                    "Failed to fetch conversation %s, skipping",
+                    conv_meta.get("uuid", "unknown"),
+                )
+                continue
+
+            content = conversation_to_markdown(conv)
+            filename = conversation_filename(conv)
+            dest = out / filename
+
+            if dest.exists():
+                existing = dest.read_text(encoding="utf-8")
+                if existing == content:
+                    results[filename] = "unchanged"
+                    continue
+                dest.write_text(content, encoding="utf-8")
+                results[filename] = "updated"
+            else:
+                dest.write_text(content, encoding="utf-8")
+                results[filename] = "created"
+        return results
+
     # --------------------------------------------------------------- memory
 
     def get_memory(self, project_id: str) -> MemoryDict:
         """Fetch the auto-generated project memory and controls."""
         resp = self._get(f"{BASE_URL}/organizations/{self.org_id}/memory?project_uuid={project_id}")
+        return resp.json()
+
+    def get_general_memory(self) -> MemoryDict:
+        """Fetch the org-level general memory (not project-specific)."""
+        resp = self._get(f"{BASE_URL}/organizations/{self.org_id}/memory")
         return resp.json()
 
     # --------------------------------------------------------------- export
@@ -232,7 +322,7 @@ class ClaudeClient:
         Download all project data into a ProjectExport object.
 
         Includes title, description, instructions, generated memory, controls,
-        and all knowledge docs with their full content.
+        knowledge docs, and all conversations with their messages.
         """
         project = self.get_project(project_id)
         docs_meta = self.list_docs(project_id)
@@ -247,6 +337,17 @@ class ClaudeClient:
 
         memory_data = self.get_memory(project_id)
 
+        conversations = []
+        for conv in self.list_all_conversations(project_id):
+            try:
+                conv_detail = self.get_conversation(project_id, conv["uuid"])
+                conversations.append(conv_detail)
+            except Exception:
+                logger.warning(
+                    "Failed to fetch conversation %s for export, skipping",
+                    conv.get("uuid", "unknown"),
+                )
+
         return ProjectExport(
             uuid=project_id,
             name=project.get("name", ""),
@@ -255,13 +356,14 @@ class ClaudeClient:
             memory=memory_data.get("memory", ""),
             controls=memory_data.get("controls", []),
             docs=docs,
+            conversations=conversations,
         )
 
     def export_project_to_file(self, project_id: str, output_path: str | Path) -> Path:
         """Export a project to a markdown file. Returns the output path."""
         export = self.export_project(project_id)
         out = Path(output_path)
-        out.write_text(export.to_markdown(), encoding="utf-8")
+        out.write_text(render_project(export), encoding="utf-8")
         return out
 
     def download_docs(self, project_id: str, output_dir: str | Path) -> list[Path]:
