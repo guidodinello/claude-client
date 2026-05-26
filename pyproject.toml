@@ -6,7 +6,11 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "curl-cffi>=0.7",
+    "logger",
 ]
+
+[tool.uv.sources]
+logger = { path = "/home/guido/projects/logger" }
 
 [project.scripts]
 claude-client = "claude_client.cli:main"
@@ -35,5 +39,6 @@ known-first-party = ["claude_client"]
 [dependency-groups]
 dev = [
     "pre-commit>=4.6.0",
+    "pytest>=9.0.3",
     "ruff>=0.15.12",
 ]

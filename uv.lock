@@ -71,6 +71,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "curl-cffi" },
+    { name = "logger" },
 ]
 
 [package.optional-dependencies]
@@ -81,12 +82,14 @@ dev = [
 [package.dev-dependencies]
 dev = [
     { name = "pre-commit" },
+    { name = "pytest" },
     { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "curl-cffi", specifier = ">=0.7" },
+    { name = "logger", directory = "../logger" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
 provides-extras = ["dev"]
@@ -94,6 +97,7 @@ provides-extras = ["dev"]
 [package.metadata.requires-dev]
 dev = [
     { name = "pre-commit", specifier = ">=4.6.0" },
+    { name = "pytest", specifier = ">=9.0.3" },
     { name = "ruff", specifier = ">=0.15.12" },
 ]
 
@@ -174,6 +178,16 @@ sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
 ]
+
+[[package]]
+name = "logger"
+version = "0.1.0"
+source = { directory = "../logger" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "ruff", specifier = ">=0.15.12" }]
 
 [[package]]
 name = "markdown-it-py"

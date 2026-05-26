@@ -1,9 +1,12 @@
 """Quick usage demo — not part of the library itself."""
 
+from logger import init_logging
+
 from claude_client import ClaudeClient
 
 
 def main():
+    init_logging()
     client = ClaudeClient()  # reads CLAUDE_SESSION_TOKEN from env
 
     projects = client.list_projects()
