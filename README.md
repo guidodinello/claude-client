@@ -11,6 +11,7 @@ Python client for the Claude.ai web API — manage projects, sync files, and exp
 - Upsert (upload or replace by name)
 - Sync docs from the web to a local folder
 - Export a full project to a single Markdown file (title, description, instructions, memory, docs, conversations)
+- Sync a full project to a local directory (project.md, docs/, conversations/)
 - Export and sync conversations as Markdown files
 - CLI for all operations
 
