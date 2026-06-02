@@ -19,7 +19,12 @@ from .models import (
     ProjectDict,
     ProjectExport,
 )
-from .render import conversation_filename, conversation_to_markdown, render_project
+from .render import (
+    conversation_filename,
+    conversation_to_markdown,
+    render_project,
+    render_project_metadata,
+)
 
 logger = get_logger(__name__)
 
@@ -381,6 +386,34 @@ class ClaudeClient:
         if out.is_dir():
             out = out / f"{project_id}.md"
         out.write_text(render_project(export), encoding="utf-8")
+        return out
+
+    def export_project_to_dir(self, project_id: str, output_dir: str | Path) -> Path:
+        """
+        Export a project to a directory.
+
+        Writes project.md (name, description, instructions, memory, controls),
+        docs/ (one file per knowledge doc), and conversations/ (one file per conversation).
+        Returns the output directory path.
+        """
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        project = self.get_project(project_id)
+        memory_data = self.get_memory(project_id)
+        meta = ProjectExport(
+            uuid=project_id,
+            name=project.get("name", ""),
+            description=project.get("description", ""),
+            instructions=project.get("prompt_template", ""),
+            memory=memory_data.get("memory", ""),
+            controls=memory_data.get("controls", []),
+        )
+        (out / "project.md").write_text(render_project_metadata(meta), encoding="utf-8")
+
+        self.download_docs(project_id, out / "docs")
+        self.export_conversations_to_files(project_id, out / "conversations")
+
         return out
 
     def download_docs(self, project_id: str, output_dir: str | Path) -> list[Path]:

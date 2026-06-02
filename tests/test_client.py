@@ -16,6 +16,13 @@ ORGS_RESPONSE = [{"uuid": ORG_ID, "capabilities": ["chat"], "name": "Test Org"}]
 PROJECTS_RESPONSE = [
     {"uuid": PROJECT_ID, "name": "My Project", "description": "", "prompt_template": ""}
 ]
+PROJECT_RESPONSE = {
+    "uuid": PROJECT_ID,
+    "name": "My Project",
+    "description": "A test project",
+    "prompt_template": "Be helpful.",
+}
+MEMORY_RESPONSE = {"memory": "Auto-memory content", "controls": [], "updated_at": "2024-01-01"}
 DOC_META = {"uuid": DOC_UUID, "file_name": "notes.md", "created_at": "2024-01-01"}
 DOC_FULL = {**DOC_META, "content": "hello world"}
 
@@ -394,3 +401,31 @@ def test_sync_conversations_from_web_updated(mock_req, client, tmp_path):
     results = client.sync_conversations_from_web(PROJECT_ID, tmp_path)
 
     assert results["test-chat-conv-uui.md"] == "updated"
+
+
+@patch("claude_client.client.requests")
+def test_export_project_to_dir(mock_req, client, tmp_path):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),  # org_id
+        _mock_response(PROJECT_RESPONSE),  # get_project
+        _mock_response(MEMORY_RESPONSE),  # get_memory
+        _mock_response([DOC_META]),  # list_docs
+        _mock_response(DOC_FULL),  # get_doc
+        _mock_response(CONV_PAGE_RESPONSE),  # list_conversations
+        _mock_response(CONVERSATION_DETAIL),  # get_conversation
+    ]
+
+    out = client.export_project_to_dir(PROJECT_ID, tmp_path / "export")
+
+    assert out == tmp_path / "export"
+    assert (out / "project.md").exists()
+    assert (out / "docs" / "notes.md").exists()
+    assert (out / "conversations" / "test-chat-conv-uui.md").exists()
+
+    project_md = (out / "project.md").read_text()
+    assert "# My Project" in project_md
+    assert "A test project" in project_md
+    assert "Be helpful." in project_md
+    assert "Auto-memory content" in project_md
+
+    assert (out / "docs" / "notes.md").read_text() == "hello world"

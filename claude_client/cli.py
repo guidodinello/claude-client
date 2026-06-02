@@ -87,6 +87,12 @@ def _export(args: argparse.Namespace) -> None:
     print(f"Exported to {out}")
 
 
+def _export_dir(args: argparse.Namespace) -> None:
+    client = _client(args)
+    out = client.export_project_to_dir(args.project_id, args.output_dir)
+    print(f"Exported to {out}/")
+
+
 # ----------------------------------------------------------------- conversations
 
 
@@ -178,6 +184,13 @@ def _build_parser() -> argparse.ArgumentParser:
     export.add_argument("project_id")
     export.add_argument("output_file")
     export.set_defaults(func=_export)
+
+    export_dir = sub.add_parser(
+        "export-dir", help="Export project to a directory (project.md, docs/, conversations/)"
+    )
+    export_dir.add_argument("project_id")
+    export_dir.add_argument("output_dir")
+    export_dir.set_defaults(func=_export_dir)
 
     # ---- conversations ----
     conversations = sub.add_parser("conversations", help="Conversation operations")

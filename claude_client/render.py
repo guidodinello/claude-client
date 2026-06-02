@@ -114,8 +114,8 @@ def conversation_filename(conv: ConversationDetailDict) -> str:
     return f"{simplify(name)}-{uuid[:8]}.md"
 
 
-def render_project(export: ProjectExport) -> str:
-    """Render a ProjectExport as a single markdown document."""
+def render_project_metadata(export: ProjectExport) -> str:
+    """Render the project header fields (name, description, instructions, memory, controls)."""
     sections: list[str] = []
 
     sections.append(f"# {export.name}\n")
@@ -132,6 +132,13 @@ def render_project(export: ProjectExport) -> str:
     if export.controls:
         controls_md = "\n".join(f"- {c}" for c in export.controls)
         sections.append(f"## Controls\n\n{controls_md}\n")
+
+    return "\n".join(sections)
+
+
+def render_project(export: ProjectExport) -> str:
+    """Render a ProjectExport as a single markdown document."""
+    sections: list[str] = [render_project_metadata(export)]
 
     if export.docs:
         sections.append("## Knowledge Files\n")
