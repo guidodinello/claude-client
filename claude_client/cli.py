@@ -81,16 +81,16 @@ def _docs_sync(args: argparse.Namespace) -> None:
 # ------------------------------------------------------------------- export
 
 
-def _export(args: argparse.Namespace) -> None:
+def _project_export(args: argparse.Namespace) -> None:
     client = _client(args)
     out = client.export_project_to_file(args.project_id, args.output_file)
     print(f"Exported to {out}")
 
 
-def _export_dir(args: argparse.Namespace) -> None:
+def _project_sync(args: argparse.Namespace) -> None:
     client = _client(args)
     out = client.export_project_to_dir(args.project_id, args.output_dir)
-    print(f"Exported to {out}/")
+    print(f"Synced to {out}/")
 
 
 # ----------------------------------------------------------------- conversations
@@ -179,18 +179,22 @@ def _build_parser() -> argparse.ArgumentParser:
     d_sync.add_argument("local_dir")
     d_sync.set_defaults(func=_docs_sync)
 
-    # ---- export ----
-    export = sub.add_parser("export", help="Export full project to a single markdown file")
-    export.add_argument("project_id")
-    export.add_argument("output_file")
-    export.set_defaults(func=_export)
+    # ---- project ----
+    project = sub.add_parser("project", help="Project-level operations")
+    prsub = project.add_subparsers(dest="action", metavar="<action>")
+    prsub.required = True
 
-    export_dir = sub.add_parser(
-        "export-dir", help="Export project to a directory (project.md, docs/, conversations/)"
+    pr_export = prsub.add_parser("export", help="Export full project to a single markdown file")
+    pr_export.add_argument("project_id")
+    pr_export.add_argument("output_file")
+    pr_export.set_defaults(func=_project_export)
+
+    pr_sync = prsub.add_parser(
+        "sync", help="Sync project to a directory (project.md, docs/, conversations/)"
     )
-    export_dir.add_argument("project_id")
-    export_dir.add_argument("output_dir")
-    export_dir.set_defaults(func=_export_dir)
+    pr_sync.add_argument("project_id")
+    pr_sync.add_argument("output_dir")
+    pr_sync.set_defaults(func=_project_sync)
 
     # ---- conversations ----
     conversations = sub.add_parser("conversations", help="Conversation operations")

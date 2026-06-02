@@ -57,10 +57,10 @@ claude-client docs download <project-id> ./output/
 claude-client docs sync <project-id> ./local-docs/
 
 # Export full project to a single markdown file
-claude-client export <project-id> export.md
+claude-client project export <project-id> export.md
 
-# Export project to a directory (project.md, docs/, conversations/)
-claude-client export-dir <project-id> ./my-project/
+# Sync project to a directory (project.md, docs/, conversations/)
+claude-client project sync <project-id> ./my-project/
 
 # Conversation operations
 claude-client conversations list <project-id>
@@ -88,10 +88,10 @@ client.upsert_file(project_id, "notes.md")
 # Sync multiple files
 client.sync_files(project_id, ["a.md", "b.md"], name_prefix="MyProject__")
 
-# Export project to markdown
+# Export project to a single markdown file
 client.export_project_to_file(project_id, "export.md")
 
-# Export project to a directory (project.md, docs/, conversations/)
+# Sync project to a directory (project.md, docs/, conversations/)
 client.export_project_to_dir(project_id, "./my-project/")
 
 # Export all conversations as markdown files
