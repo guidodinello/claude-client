@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -9,7 +10,10 @@ from logger import init_logging
 
 from .client import ClaudeClient
 from .exceptions import AuthError, NotFoundError, UploadError
+from .migrate import migrate_project
 from .render import conversation_to_markdown
+
+_PROJECT_URL_RE = re.compile(r"([0-9a-f-]{36})/?$", re.IGNORECASE)
 
 
 def _client(args: argparse.Namespace) -> ClaudeClient:
@@ -17,6 +21,14 @@ def _client(args: argparse.Namespace) -> ClaudeClient:
     if not token:
         sys.exit("Error: CLAUDE_SESSION_TOKEN not set. Pass --token or export the env var.")
     return ClaudeClient(token)
+
+
+def _parse_project_id(value: str) -> str:
+    """Accept either a bare project uuid or a full claude.ai project URL."""
+    match = _PROJECT_URL_RE.search(value)
+    if not match:
+        sys.exit(f"Error: could not parse a project id from '{value}'.")
+    return match.group(1)
 
 
 # ------------------------------------------------------------------ projects
@@ -91,6 +103,36 @@ def _project_sync(args: argparse.Namespace) -> None:
     client = _client(args)
     out = client.export_project_to_dir(args.project_id, args.output_dir)
     print(f"Synced to {out}/")
+
+
+def _project_migrate(args: argparse.Namespace) -> None:
+    source_token = args.source_token or os.getenv("CLAUDE_SESSION_TOKEN")
+    if not source_token:
+        sys.exit("Error: no source token. Pass --source-token or export CLAUDE_SESSION_TOKEN.")
+
+    source_pid = _parse_project_id(args.source)
+    dest_pid = _parse_project_id(args.dest)
+
+    source = ClaudeClient(source_token)
+    dest = ClaudeClient(args.dest_token)
+
+    source_org = args.source_org or source.find_project_org(source_pid)
+    dest_org = args.dest_org or dest.find_project_org(dest_pid)
+    source = ClaudeClient(source_token, org_id=source_org)
+    dest = ClaudeClient(args.dest_token, org_id=dest_org)
+
+    counts = migrate_project(
+        source,
+        source_pid,
+        dest,
+        dest_pid,
+        include_conversations=not args.no_conversations,
+        include_memory=not args.no_memory,
+    )
+    print(
+        f"Migrated {counts['docs']} doc(s), {counts['conversations']} conversation(s), "
+        f"{counts['memory']} memory snapshot(s) to project {dest_pid}."
+    )
 
 
 # ----------------------------------------------------------------- conversations
@@ -195,6 +237,23 @@ def _build_parser() -> argparse.ArgumentParser:
     pr_sync.add_argument("project_id")
     pr_sync.add_argument("output_dir")
     pr_sync.set_defaults(func=_project_sync)
+
+    pr_migrate = prsub.add_parser(
+        "migrate", help="Migrate a project's docs/conversations/memory to another project"
+    )
+    pr_migrate.add_argument("source", help="Source project id or claude.ai project URL")
+    pr_migrate.add_argument("dest", help="Destination project id or claude.ai project URL")
+    pr_migrate.add_argument("--source-token", metavar="TOKEN", help="Source account session token")
+    pr_migrate.add_argument(
+        "--dest-token", metavar="TOKEN", required=True, help="Destination account session token"
+    )
+    pr_migrate.add_argument("--source-org", metavar="ORG_ID", help="Override source org id")
+    pr_migrate.add_argument("--dest-org", metavar="ORG_ID", help="Override destination org id")
+    pr_migrate.add_argument(
+        "--no-conversations", action="store_true", help="Skip migrating conversations"
+    )
+    pr_migrate.add_argument("--no-memory", action="store_true", help="Skip migrating memory")
+    pr_migrate.set_defaults(func=_project_migrate)
 
     # ---- conversations ----
     conversations = sub.add_parser("conversations", help="Conversation operations")

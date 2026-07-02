@@ -13,6 +13,7 @@ Python client for the Claude.ai web API — manage projects, sync files, and exp
 - Export a full project to a single Markdown file (title, description, instructions, memory, docs, conversations)
 - Sync a full project to a local directory (project.md, docs/, conversations/)
 - Export and sync conversations as Markdown files
+- Migrate a project's docs, conversations, and memory to another project — even across accounts/orgs
 - CLI for all operations
 
 ## Installation
@@ -63,6 +64,16 @@ claude-client project export <project-id> export.md
 # Sync project to a directory (project.md, docs/, conversations/)
 claude-client project sync <project-id> ./my-project/
 
+# Migrate a project's docs, conversations, and memory to another project
+# (source/dest accept a bare project id or a full claude.ai project URL;
+#  source/dest orgs are auto-detected unless overridden)
+claude-client project migrate <source> <dest> \
+  --source-token sk-ant-sid01-... \
+  --dest-token sk-ant-sid01-...
+
+# Skip conversations or memory during migration
+claude-client project migrate <source> <dest> --dest-token ... --no-conversations --no-memory
+
 # Conversation operations
 claude-client conversations list <project-id>
 claude-client conversations get <project-id> <conversation-id>
@@ -103,6 +114,14 @@ client.sync_conversations_from_web(project_id, "./local-convos/")
 
 # Get a single conversation as markdown
 markdown = client.export_conversation_to_file(project_id, conv_id, "conv.md")
+
+# Migrate a project's docs/conversations/memory to another project, possibly
+# across accounts and orgs (two separate clients, one per account)
+from claude_client import migrate_project
+
+source = ClaudeClient(source_token, org_id=source_org_id)
+dest = ClaudeClient(dest_token, org_id=dest_org_id)
+migrate_project(source, source_project_id, dest, dest_project_id)
 ```
 
 ## Development

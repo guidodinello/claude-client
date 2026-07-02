@@ -429,3 +429,96 @@ def test_export_project_to_dir(mock_req, client, tmp_path):
     assert "Auto-memory content" in project_md
 
     assert (out / "docs" / "notes.md").read_text() == "hello world"
+
+
+# ---------------------------------------------------------------- org targeting
+
+
+def test_org_id_override_shadows_cached_property():
+    client = ClaudeClient(TOKEN, org_id="explicit-org")
+    assert client.org_id == "explicit-org"
+
+
+@patch("claude_client.client.requests")
+def test_find_project_org(mock_req, client):
+    other_org = {"uuid": "other-org", "capabilities": ["chat"], "name": "Other Org"}
+    mock_req.get.side_effect = [
+        _mock_response([*ORGS_RESPONSE, other_org]),  # list_organizations
+        _mock_response([]),  # projects in first org — not found here
+        _mock_response(PROJECTS_RESPONSE),  # projects in second org — found
+    ]
+    org = client.find_project_org(PROJECT_ID)
+    assert org == "other-org"
+
+
+@patch("claude_client.client.requests")
+def test_find_project_org_not_found(mock_req, client):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([]),
+    ]
+    with pytest.raises(NotFoundError):
+        client.find_project_org("missing-project")
+
+
+@patch("claude_client.client.requests")
+def test_update_project(mock_req, client):
+    mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
+    updated = {**PROJECT_RESPONSE, "prompt_template": "New instructions."}
+    mock_req.put.return_value = _mock_response(updated)
+
+    result = client.update_project(PROJECT_ID, instructions="New instructions.")
+
+    assert result["prompt_template"] == "New instructions."
+
+    import json
+
+    payload = json.loads(mock_req.put.call_args.kwargs["data"])
+    assert payload == {"prompt_template": "New instructions."}
+
+
+# ------------------------------------------------------------------------ CLI
+
+
+def test_parse_project_id_from_url():
+    from claude_client.cli import _parse_project_id
+
+    url = "https://claude.ai/project/01999596-e432-71e7-87f3-1e326fcd142b"
+    assert _parse_project_id(url) == "01999596-e432-71e7-87f3-1e326fcd142b"
+
+
+def test_parse_project_id_from_bare_uuid():
+    from claude_client.cli import _parse_project_id
+
+    uuid = "01999596-e432-71e7-87f3-1e326fcd142b"
+    assert _parse_project_id(uuid) == uuid
+
+
+# -------------------------------------------------------------------- migrate
+
+
+@patch("claude_client.client.requests")
+def test_migrate_project_skips_update_when_source_has_no_metadata(mock_req):
+    """An empty description/instructions must not trigger a PUT with an empty
+    payload — the real API rejects that with 400 'must update at least one field'."""
+    from claude_client.migrate import migrate_project
+
+    source = ClaudeClient("source-token", org_id=ORG_ID)
+    dest = ClaudeClient("dest-token", org_id=ORG_ID)
+
+    empty_project = {**PROJECT_RESPONSE, "description": "", "prompt_template": ""}
+    mock_req.get.side_effect = [
+        _mock_response(empty_project),  # source.get_project
+        _mock_response([DOC_META]),  # source.list_docs
+        _mock_response(DOC_FULL),  # source.get_doc
+        _mock_response([]),  # dest.upsert_content -> dest.list_docs (no existing doc)
+        _mock_response({"data": [], "pagination": {"has_more": False}}),  # list_conversations
+        _mock_response(MEMORY_RESPONSE),  # source.get_memory
+        _mock_response([]),  # dest.upsert_content -> dest.list_docs (no existing doc)
+    ]
+    mock_req.post.return_value = _mock_response(DOC_FULL, status_code=201)
+
+    counts = migrate_project(source, PROJECT_ID, dest, PROJECT_ID)
+
+    mock_req.put.assert_not_called()
+    assert counts == {"docs": 1, "conversations": 0, "memory": 1}

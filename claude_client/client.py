@@ -15,6 +15,7 @@ from .models import (
     ConversationDict,
     DocDict,
     MemoryDict,
+    OrgDict,
     Page,
     ProjectDict,
     ProjectExport,
@@ -49,11 +50,15 @@ class ClaudeClient:
     project files (knowledge docs).
     """
 
-    def __init__(self, session_token: str | None = None) -> None:
+    def __init__(self, session_token: str | None = None, *, org_id: str | None = None) -> None:
         token = session_token or os.getenv("CLAUDE_SESSION_TOKEN")
         if not token:
             raise ValueError("Session token required. Pass it or set CLAUDE_SESSION_TOKEN.")
         self._cookie = f"sessionKey={token}"
+        if org_id is not None:
+            # Shadows the `org_id` cached_property: it's a non-data descriptor, so an
+            # entry in the instance __dict__ takes precedence over it.
+            self.__dict__["org_id"] = org_id
 
     # ------------------------------------------------------------------ auth
 
@@ -95,6 +100,16 @@ class ClaudeClient:
         self._check_auth(resp)
         return resp
 
+    def _put(self, url: str, payload: dict) -> requests.Response:
+        resp = requests.put(
+            url,
+            headers=self._headers(),
+            data=json.dumps(payload),
+            impersonate="chrome110",
+        )
+        self._check_auth(resp)
+        return resp
+
     def _delete(self, url: str) -> requests.Response:
         resp = requests.delete(url, headers=self._headers(), impersonate="chrome110")
         self._check_auth(resp)
@@ -109,10 +124,13 @@ class ClaudeClient:
 
     # ------------------------------------------------------- org / projects
 
+    def list_organizations(self) -> list[OrgDict]:
+        resp = self._get(f"{BASE_URL}/organizations")
+        return resp.json()
+
     @cached_property
     def org_id(self) -> str:
-        resp = self._get(f"{BASE_URL}/organizations")
-        for org in resp.json():
+        for org in self.list_organizations():
             caps = org.get("capabilities", [])
             if "chat" in caps or "claude_pro" in caps:
                 return str(org["uuid"])
@@ -132,6 +150,40 @@ class ClaudeClient:
             if p.get("name") == name:
                 return p
         raise NotFoundError(f"Project '{name}' not found.")
+
+    def find_project_org(self, project_id: str) -> str:
+        """
+        Find which of this account's organizations owns a project.
+
+        Needed because `org_id` only auto-picks the *first* chat-capable org, which
+        isn't necessarily the one a given project lives in (accounts can belong to
+        multiple orgs). Raises NotFoundError if no org has this project.
+        """
+        for org in self.list_organizations():
+            resp = self._get(f"{BASE_URL}/organizations/{org['uuid']}/projects")
+            if any(p["uuid"] == project_id for p in resp.json()):
+                return str(org["uuid"])
+        raise NotFoundError(f"Project '{project_id}' not found in any organization.")
+
+    def update_project(
+        self,
+        project_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        instructions: str | None = None,
+    ) -> ProjectDict:
+        """Update project metadata. Only provided fields are sent."""
+        payload: dict[str, str] = {}
+        if name is not None:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        if instructions is not None:
+            payload["prompt_template"] = instructions
+        resp = self._put(f"{BASE_URL}/organizations/{self.org_id}/projects/{project_id}", payload)
+        resp.raise_for_status()
+        return resp.json()
 
     # ----------------------------------------------------------------- docs
 
