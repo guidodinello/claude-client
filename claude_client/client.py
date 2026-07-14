@@ -40,6 +40,8 @@ _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
 )
+_IMPERSONATE = "chrome110"
+_DEFAULT_TIMEOUT = 30  # seconds; guards against a hung connection blocking forever
 
 
 class ClaudeClient:
@@ -85,7 +87,12 @@ class ClaudeClient:
         }
 
     def _get(self, url: str) -> requests.Response:
-        resp = requests.get(url, headers=self._headers(), impersonate="chrome110")
+        resp = requests.get(
+            url,
+            headers=self._headers(),
+            impersonate=_IMPERSONATE,
+            timeout=_DEFAULT_TIMEOUT,
+        )
         self._check_auth(resp)
         resp.raise_for_status()
         return resp
@@ -95,7 +102,8 @@ class ClaudeClient:
             url,
             headers=self._headers(),
             data=json.dumps(payload),
-            impersonate="chrome110",
+            impersonate=_IMPERSONATE,
+            timeout=_DEFAULT_TIMEOUT,
         )
         self._check_auth(resp)
         return resp
@@ -105,13 +113,19 @@ class ClaudeClient:
             url,
             headers=self._headers(),
             data=json.dumps(payload),
-            impersonate="chrome110",
+            impersonate=_IMPERSONATE,
+            timeout=_DEFAULT_TIMEOUT,
         )
         self._check_auth(resp)
         return resp
 
     def _delete(self, url: str) -> requests.Response:
-        resp = requests.delete(url, headers=self._headers(), impersonate="chrome110")
+        resp = requests.delete(
+            url,
+            headers=self._headers(),
+            impersonate=_IMPERSONATE,
+            timeout=_DEFAULT_TIMEOUT,
+        )
         self._check_auth(resp)
         resp.raise_for_status()
         return resp
@@ -230,11 +244,21 @@ class ClaudeClient:
 
     def upsert_content(self, project_id: str, content: str, file_name: str) -> DocDict:
         """Upload content, replacing any existing doc with the same name."""
+        deleted_existing = False
         for doc in self.list_docs(project_id):
             if doc.get("file_name") == file_name:
                 self.delete_doc(project_id, doc["uuid"])
+                deleted_existing = True
                 break
-        return self.upload_content(project_id, content, file_name)
+        if not deleted_existing:
+            return self.upload_content(project_id, content, file_name)
+        try:
+            return self.upload_content(project_id, content, file_name)
+        except Exception as exc:
+            raise UploadError(
+                f"Upload of '{file_name}' failed after deleting the existing doc; "
+                f"the original has been removed from the project."
+            ) from exc
 
     def upsert_file(
         self, project_id: str, file_path: str | Path, file_name: str | None = None

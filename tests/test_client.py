@@ -138,6 +138,41 @@ def test_upsert_content_replaces_existing(mock_req, client):
 
 
 @patch("claude_client.client.requests")
+def test_upsert_content_wraps_upload_failure_after_delete(mock_req, client):
+    """If the re-upload fails after an existing doc was deleted, the error must
+    say so — the caller needs to know the original is gone."""
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),  # org_id
+        _mock_response([DOC_META]),  # list_docs
+    ]
+    mock_req.delete.return_value = _mock_response(None, status_code=204)
+    mock_req.post.return_value = _mock_response({}, status_code=500)
+
+    with pytest.raises(UploadError, match="original has been removed"):
+        client.upsert_content(PROJECT_ID, "new content", "notes.md")
+
+    assert mock_req.delete.called
+    assert mock_req.post.called
+
+
+@patch("claude_client.client.requests")
+def test_upsert_content_no_existing_doc_does_not_wrap_error(mock_req, client):
+    """When there's no existing doc to delete, an upload failure should
+    propagate as the plain UploadError, without the delete-related message."""
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),  # org_id
+        _mock_response([]),  # list_docs — nothing matches
+    ]
+    mock_req.post.return_value = _mock_response({}, status_code=500)
+
+    with pytest.raises(UploadError) as exc_info:
+        client.upsert_content(PROJECT_ID, "new content", "notes.md")
+
+    assert "original has been removed" not in str(exc_info.value)
+    assert not mock_req.delete.called
+
+
+@patch("claude_client.client.requests")
 def test_check_auth_raises_on_401(mock_req, client):
     r = _mock_response({}, status_code=401)
     mock_req.get.return_value = r
