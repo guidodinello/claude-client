@@ -5,3 +5,4 @@
 - [x] we should have a method to export a project knowledge documents to a local folder as markdown files. also a sync one to keep local up to date with the web project. (maybe also a mirror set, local to web?)
 - [x] we should be able to download the conversations (or just one by id?) of a project as markdown files, maybe one file per conversation. this should be part of the export project to markdown feature.
 - [ ] avoid n+1 on conversations requests
+- [ ] CLI command grouping/naming cleanup — see [`docs/cli-consistency-review.md`](docs/cli-consistency-review.md)
