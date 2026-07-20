@@ -135,6 +135,18 @@ def _project_migrate(args: argparse.Namespace) -> None:
     )
 
 
+# ---------------------------------------------------------------------- account
+
+
+def _account_export(args: argparse.Namespace) -> None:
+    client = _client(args)
+    results = client.export_all_projects_to_dir(args.output_dir)
+    for name, ok in results.items():
+        print(f"  [{'ok' if ok else 'FAILED'}] {name}")
+    succeeded = sum(ok for ok in results.values())
+    print(f"Exported {succeeded}/{len(results)} project(s) to {args.output_dir}/")
+
+
 # ----------------------------------------------------------------- conversations
 
 
@@ -254,6 +266,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pr_migrate.add_argument("--no-memory", action="store_true", help="Skip migrating memory")
     pr_migrate.set_defaults(func=_project_migrate)
+
+    # ---- account ----
+    account = sub.add_parser("account", help="Account-wide operations (across all orgs)")
+    asub = account.add_subparsers(dest="action", metavar="<action>")
+    asub.required = True
+
+    a_export = asub.add_parser(
+        "export", help="Export every project across all chat-capable orgs to a directory"
+    )
+    a_export.add_argument("output_dir")
+    a_export.set_defaults(func=_account_export)
 
     # ---- conversations ----
     conversations = sub.add_parser("conversations", help="Conversation operations")

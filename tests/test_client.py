@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from claude_client import AuthError, ClaudeClient, NotFoundError, UploadError
-from claude_client.render import conversation_to_markdown
+from claude_client.render import conversation_to_markdown, slugify
 
 ORG_ID = "org-uuid"
 PROJECT_ID = "proj-uuid"
@@ -44,6 +44,42 @@ def client():
 def test_org_id(mock_req, client):
     mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
     assert client.org_id == ORG_ID
+
+
+@patch("claude_client.client.requests")
+def test_list_all_projects_across_multiple_orgs(mock_req, client):
+    other_org = {"uuid": "other-org", "capabilities": ["chat"], "name": "Other Org"}
+    other_project = {
+        "uuid": "other-proj",
+        "name": "Other Project",
+        "description": "",
+        "prompt_template": "",
+    }
+    mock_req.get.side_effect = [
+        _mock_response([*ORGS_RESPONSE, other_org]),  # list_organizations
+        _mock_response(PROJECTS_RESPONSE),  # projects in first org
+        _mock_response([other_project]),  # projects in second org
+    ]
+
+    results = client.list_all_projects()
+
+    assert results == [
+        (ORG_ID, PROJECTS_RESPONSE[0]),
+        ("other-org", other_project),
+    ]
+
+
+@patch("claude_client.client.requests")
+def test_list_all_projects_skips_non_chat_orgs(mock_req, client):
+    non_chat_org = {"uuid": "no-chat-org", "capabilities": ["other"], "name": "No Chat Org"}
+    mock_req.get.side_effect = [
+        _mock_response([*ORGS_RESPONSE, non_chat_org]),  # list_organizations
+        _mock_response(PROJECTS_RESPONSE),  # only the chat-capable org gets queried
+    ]
+
+    results = client.list_all_projects()
+
+    assert [org_id for org_id, _ in results] == [ORG_ID]
 
 
 @patch("claude_client.client.requests")
@@ -327,6 +363,15 @@ def test_list_all_conversations(mock_req, client):
     assert convs[0]["name"] == "Test Chat"
 
 
+def test_slugify_basic():
+    assert slugify("My Cool Project!") == "my-cool-project"
+
+
+def test_slugify_empty_falls_back():
+    assert slugify("!!!") == "untitled"
+    assert slugify("!!!", fallback="conversation") == "conversation"
+
+
 def test_conversation_to_markdown():
     md = conversation_to_markdown(CONVERSATION_DETAIL)
 
@@ -464,6 +509,60 @@ def test_export_project_to_dir(mock_req, client, tmp_path):
     assert "Auto-memory content" in project_md
 
     assert (out / "docs" / "notes.md").read_text() == "hello world"
+
+
+@patch("claude_client.client.requests")
+def test_export_all_projects_to_dir_multi_org(mock_req, client, tmp_path):
+    other_org = {"uuid": "other-org", "capabilities": ["chat"], "name": "Other Org"}
+    project_a = {"uuid": "proj-a", "name": "Project A", "description": "", "prompt_template": ""}
+    project_b = {"uuid": "proj-b", "name": "Project B", "description": "", "prompt_template": ""}
+    empty_conv_page = {"data": [], "pagination": {"has_more": False}}
+
+    mock_req.get.side_effect = [
+        _mock_response([*ORGS_RESPONSE, other_org]),  # list_all_projects: list_organizations
+        _mock_response([project_a]),  # list_all_projects: org 1 projects
+        _mock_response([project_b]),  # list_all_projects: org 2 projects
+        _mock_response(project_a),  # export proj-a: get_project
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),  # list_docs
+        _mock_response(empty_conv_page),  # list_conversations
+        _mock_response(project_b),  # export proj-b: get_project
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+    ]
+
+    results = client.export_all_projects_to_dir(tmp_path)
+
+    assert results == {"Project A": True, "Project B": True}
+    assert (tmp_path / "project-a" / "project.md").exists()
+    assert (tmp_path / "project-b" / "project.md").exists()
+
+
+@patch("claude_client.client.requests")
+def test_export_all_projects_to_dir_one_failure_does_not_abort_others(mock_req, client, tmp_path):
+    project_a = {"uuid": "proj-a", "name": "Project A", "description": "", "prompt_template": ""}
+    project_b = {"uuid": "proj-b", "name": "Project B", "description": "", "prompt_template": ""}
+    empty_conv_page = {"data": [], "pagination": {"has_more": False}}
+
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),  # list_all_projects: list_organizations
+        _mock_response([project_a, project_b]),  # list_all_projects: projects in org
+        Exception("boom"),  # export proj-a: get_project raises
+        _mock_response(project_b),  # export proj-b: get_project
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+    ]
+
+    results = client.export_all_projects_to_dir(tmp_path)
+
+    assert results == {"Project A": False, "Project B": True}
+    assert (tmp_path / "project-b" / "project.md").exists()
+    # export_project_to_dir creates the output dir before its first API call, so
+    # project-a's dir may exist, but it must be empty — the failure happened before
+    # anything was written into it.
+    assert not (tmp_path / "project-a" / "project.md").exists()
 
 
 # ---------------------------------------------------------------- org targeting
