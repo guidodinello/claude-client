@@ -1,5 +1,6 @@
 """Migrate a project's content from one Claude.ai account/org to another."""
 
+from curl_cffi import requests
 from logger import get_logger
 from rich.progress import track
 
@@ -28,40 +29,40 @@ def migrate_project(
     Uses upsert semantics throughout, so re-running is safe and won't duplicate docs.
     Returns a summary count per category.
     """
-    project = source.get_project(source_project_id)
+    project = source.projects.get(source_project_id)
     description = project.get("description") or None
     instructions = project.get("prompt_template") or None
     if description is not None or instructions is not None:
         # The API rejects a PUT with no fields ("must update at least one field"),
         # so skip the call entirely when the source has nothing to copy.
-        dest.update_project(dest_project_id, description=description, instructions=instructions)
+        dest.projects.update(dest_project_id, description=description, instructions=instructions)
 
     counts = {"docs": 0, "conversations": 0, "memory": 0}
 
-    for meta in track(source.list_docs(source_project_id), description="Migrating docs…"):
-        doc = source.get_doc(source_project_id, meta["uuid"])
-        dest.upsert_content(dest_project_id, doc.get("content", ""), doc["file_name"])
+    for meta in track(source.docs.list(source_project_id), description="Migrating docs…"):
+        doc = source.docs.get(source_project_id, meta["uuid"])
+        dest.docs.push_content(dest_project_id, doc.get("content", ""), doc["file_name"])
         counts["docs"] += 1
 
     if include_conversations:
-        convs = source.list_all_conversations(source_project_id)
+        convs = source.conversations.list(source_project_id)
         for conv_meta in track(convs, description="Migrating conversations…"):
             try:
-                conv = source.get_conversation(source_project_id, conv_meta["uuid"])
-            except Exception:
+                conv = source.conversations.get(conv_meta["uuid"])
+            except requests.exceptions.RequestException:
                 logger.warning(
                     "Failed to fetch conversation %s, skipping", conv_meta.get("uuid", "unknown")
                 )
                 continue
             content = conversation_to_markdown(conv)
             file_name = f"Conversation - {conv.get('name', 'Untitled')}"
-            dest.upsert_content(dest_project_id, content, file_name)
+            dest.docs.push_content(dest_project_id, content, file_name)
             counts["conversations"] += 1
 
     if include_memory:
-        memory = source.get_memory(source_project_id).get("memory", "")
+        memory = source.memory.get(source_project_id).get("memory", "")
         if memory:
-            dest.upsert_content(dest_project_id, memory, "Project Memory (migrated)")
+            dest.docs.push_content(dest_project_id, memory, "Project Memory (migrated)")
             counts["memory"] += 1
 
     return counts

@@ -16,11 +16,28 @@ from .render import conversation_to_markdown
 _PROJECT_URL_RE = re.compile(r"([0-9a-f-]{36})/?$", re.IGNORECASE)
 
 
-def _client(args: argparse.Namespace) -> ClaudeClient:
+def _client(args: argparse.Namespace, project_id: str | None = None) -> ClaudeClient:
+    """
+    Build a client for this command.
+
+    `org_id` defaults to the first chat-capable org on the account, which isn't
+    necessarily the org that owns `project_id` on a multi-org account. When a
+    project id is given and the account has more than one chat-capable org, resolve
+    and pin the owning org so project-scoped requests don't 404 against the wrong
+    org. Single-org accounts skip the extra lookup — there's no ambiguity to resolve.
+    """
     token = getattr(args, "token", None) or os.getenv("CLAUDE_SESSION_TOKEN")
     if not token:
         sys.exit("Error: CLAUDE_SESSION_TOKEN not set. Pass --token or export the env var.")
-    return ClaudeClient(token)
+    client = ClaudeClient(token)
+    if project_id is None:
+        return client
+
+    org_ids = client.orgs.chat_capable_ids()
+    if len(org_ids) <= 1:
+        return client
+    org_id = client.projects.find_org(project_id)
+    return client.scoped(org_id)
 
 
 def _parse_project_id(value: str) -> str:
@@ -31,78 +48,48 @@ def _parse_project_id(value: str) -> str:
     return match.group(1)
 
 
-# ------------------------------------------------------------------ projects
+def _print_pull_results(results: dict[str, str], label: str) -> None:
+    for name, status in results.items():
+        print(f"  [{label}/{status}] {name}")
 
 
-def _projects_list(args: argparse.Namespace) -> None:
+# ------------------------------------------------------------------- project
+
+
+def _project_list(args: argparse.Namespace) -> None:
     client = _client(args)
-    projects = client.list_projects()
+    projects = client.projects.list()
     if not projects:
         print("No projects found.")
         return
-    for p in projects:
-        print(f"{p['uuid']}  {p['name']}")
+    for org_id, p in projects:
+        print(f"{org_id}  {p['uuid']}  {p['name']}")
 
 
-# ---------------------------------------------------------------------- docs
-
-
-def _docs_list(args: argparse.Namespace) -> None:
-    client = _client(args)
-    docs = client.list_docs(args.project_id)
-    if not docs:
-        print("No docs found.")
-        return
-    for d in docs:
-        print(f"{d['uuid']}  {d['file_name']}")
-
-
-def _docs_get(args: argparse.Namespace) -> None:
-    client = _client(args)
-    doc = client.get_doc(args.project_id, args.doc_id)
-    print(doc.get("content", ""))
-
-
-def _docs_upload(args: argparse.Namespace) -> None:
-    client = _client(args)
-    path = Path(args.file)
-    name = args.name or path.name
-    try:
-        doc = client.upload_file(args.project_id, path, name)
-        print(f"Uploaded: {doc['file_name']}  ({doc['uuid']})")
-    except (FileNotFoundError, UploadError) as exc:
-        sys.exit(f"Error: {exc}")
-
-
-def _docs_download(args: argparse.Namespace) -> None:
-    client = _client(args)
-    written = client.download_docs(args.project_id, args.output_dir)
-    for p in written:
-        print(f"  {p}")
-    print(f"Downloaded {len(written)} file(s) to {args.output_dir}")
-
-
-def _docs_sync(args: argparse.Namespace) -> None:
-    client = _client(args)
-    results = client.sync_from_web(args.project_id, args.local_dir)
-    for name, status in results.items():
-        print(f"  [{status}] {name}")
-    print(f"Synced {len(results)} file(s).")
-
-
-# ------------------------------------------------------------------- export
+def _project_show(args: argparse.Namespace) -> None:
+    client = _client(args, args.project_id)
+    project = client.projects.get(args.project_id)
+    print(f"Name: {project.get('name', '')}")
+    print(f"Description: {project.get('description', '')}")
+    print(f"Instructions: {project.get('prompt_template', '')}")
 
 
 def _project_export(args: argparse.Namespace) -> None:
-    client = _client(args)
-    out = client.export_project_to_file(args.project_id, args.output_file)
+    client = _client(args, args.project_id)
+    markdown = client.projects.export(args.project_id)
+    out = Path(args.output_file)
+    if out.is_dir():
+        out = out / f"{args.project_id}.md"
+    out.write_text(markdown, encoding="utf-8")
     print(f"Exported to {out}")
 
 
-def _project_sync(args: argparse.Namespace) -> None:
-    client = _client(args)
-    out = client.export_project_to_dir(args.project_id, args.output_dir)
-    print(f"Synced to {out}/")
+def _project_pull(args: argparse.Namespace) -> None:
+    client = _client(args, args.project_id)
+    result = client.projects.pull(args.project_id, args.output_dir, force=args.force)
+    _print_pull_results(result.docs, "docs")
+    _print_pull_results(result.conversations, "conversations")
+    print(f"Pulled to {result.path}/")
 
 
 def _project_migrate(args: argparse.Namespace) -> None:
@@ -116,10 +103,10 @@ def _project_migrate(args: argparse.Namespace) -> None:
     source = ClaudeClient(source_token)
     dest = ClaudeClient(args.dest_token)
 
-    source_org = args.source_org or source.find_project_org(source_pid)
-    dest_org = args.dest_org or dest.find_project_org(dest_pid)
-    source = ClaudeClient(source_token, org_id=source_org)
-    dest = ClaudeClient(args.dest_token, org_id=dest_org)
+    source_org = args.source_org or source.projects.find_org(source_pid)
+    dest_org = args.dest_org or dest.projects.find_org(dest_pid)
+    source = source.scoped(source_org)
+    dest = dest.scoped(dest_org)
 
     counts = migrate_project(
         source,
@@ -135,24 +122,72 @@ def _project_migrate(args: argparse.Namespace) -> None:
     )
 
 
-# ---------------------------------------------------------------------- account
+# ---------------------------------------------------------------------- docs
 
 
-def _account_export(args: argparse.Namespace) -> None:
+def _docs_list(args: argparse.Namespace) -> None:
+    client = _client(args, args.project_id)
+    docs = client.docs.list(args.project_id)
+    if not docs:
+        print("No docs found.")
+        return
+    for d in docs:
+        print(f"{d['uuid']}  {d['file_name']}")
+
+
+def _docs_get(args: argparse.Namespace) -> None:
+    client = _client(args, args.project_id)
+    doc = client.docs.get(args.project_id, args.doc_id)
+    print(doc.get("content", ""))
+
+
+def _docs_push(args: argparse.Namespace) -> None:
+    client = _client(args, args.project_id)
+    try:
+        doc = client.docs.push(args.project_id, args.file, name=args.name)
+        print(f"Pushed: {doc['file_name']}  ({doc['uuid']})")
+    except (FileNotFoundError, UploadError) as exc:
+        sys.exit(f"Error: {exc}")
+
+
+def _docs_rm(args: argparse.Namespace) -> None:
+    client = _client(args, args.project_id)
+    if args.all:
+        count = client.docs.rm_all(args.project_id)
+        print(f"Removed {count} doc(s)")
+        return
+    if not args.doc_id:
+        sys.exit("Error: doc_id is required unless --all is given.")
+    client.docs.rm(args.project_id, args.doc_id)
+    print(f"Removed doc {args.doc_id}")
+
+
+def _docs_pull(args: argparse.Namespace) -> None:
+    client = _client(args, args.project_id)
+    results = client.docs.pull(args.project_id, args.local_dir, force=args.force)
+    for name, status in results.items():
+        print(f"  [{status}] {name}")
+    print(f"Pulled {len(results)} file(s).")
+
+
+# --------------------------------------------------------------------- account
+
+
+def _account_pull(args: argparse.Namespace) -> None:
     client = _client(args)
-    results = client.export_all_projects_to_dir(args.output_dir)
+    results = client.projects.pull_all(args.output_dir, force=args.force)
     for name, ok in results.items():
         print(f"  [{'ok' if ok else 'FAILED'}] {name}")
     succeeded = sum(ok for ok in results.values())
-    print(f"Exported {succeeded}/{len(results)} project(s) to {args.output_dir}/")
+    print(f"Pulled {succeeded}/{len(results)} project(s) to {args.output_dir}/")
 
 
-# ----------------------------------------------------------------- conversations
+# --------------------------------------------------------------- conversations
 
 
 def _conversations_list(args: argparse.Namespace) -> None:
-    client = _client(args)
-    convs = client.list_all_conversations(args.project_id)
+    client = _client(args, args.project_id)
+    convs = client.conversations.list(args.project_id)
     if not convs:
         print("No conversations found.")
         return
@@ -161,29 +196,29 @@ def _conversations_list(args: argparse.Namespace) -> None:
 
 
 def _conversations_get(args: argparse.Namespace) -> None:
-    client = _client(args)
-    conv = client.get_conversation(args.project_id, args.conversation_id)
+    client = _client(args, args.project_id)
+    conv = client.conversations.get(args.conversation_id)
     content = conversation_to_markdown(conv)
     print(content)
 
 
-def _conversations_download(args: argparse.Namespace) -> None:
-    client = _client(args)
-    written = client.export_conversations_to_files(args.project_id, args.output_dir)
-    for p in written:
-        print(f"  {p}")
-    print(f"Downloaded {len(written)} file(s) to {args.output_dir}")
-
-
-def _conversations_sync(args: argparse.Namespace) -> None:
-    client = _client(args)
-    results = client.sync_conversations_from_web(args.project_id, args.local_dir)
+def _conversations_pull(args: argparse.Namespace) -> None:
+    client = _client(args, args.project_id)
+    results = client.conversations.pull(args.project_id, args.local_dir, force=args.force)
     for name, status in results.items():
         print(f"  [{status}] {name}")
-    print(f"Synced {len(results)} file(s).")
+    print(f"Pulled {len(results)} file(s).")
 
 
 # ---------------------------------------------------------------- arg parsing
+
+
+def _add_force_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Rewrite every file unconditionally, instead of skipping unchanged ones",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -196,59 +231,30 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = root.add_subparsers(dest="group", metavar="<command>")
     sub.required = True
 
-    # ---- projects ----
-    projects = sub.add_parser("projects", help="Project operations")
-    psub = projects.add_subparsers(dest="action", metavar="<action>")
-    psub.required = True
-    p_list = psub.add_parser("list", help="List all projects")
-    p_list.set_defaults(func=_projects_list)
-
-    # ---- docs ----
-    docs = sub.add_parser("docs", help="Knowledge doc operations")
-    dsub = docs.add_subparsers(dest="action", metavar="<action>")
-    dsub.required = True
-
-    d_list = dsub.add_parser("list", help="List docs in a project")
-    d_list.add_argument("project_id")
-    d_list.set_defaults(func=_docs_list)
-
-    d_get = dsub.add_parser("get", help="Print a doc's content")
-    d_get.add_argument("project_id")
-    d_get.add_argument("doc_id")
-    d_get.set_defaults(func=_docs_get)
-
-    d_upload = dsub.add_parser("upload", help="Upload a file to a project")
-    d_upload.add_argument("project_id")
-    d_upload.add_argument("file")
-    d_upload.add_argument("--name", metavar="NAME", help="Override the file name in Claude")
-    d_upload.set_defaults(func=_docs_upload)
-
-    d_download = dsub.add_parser("download", help="Download all docs to a local folder")
-    d_download.add_argument("project_id")
-    d_download.add_argument("output_dir")
-    d_download.set_defaults(func=_docs_download)
-
-    d_sync = dsub.add_parser("sync", help="Sync web docs → local folder (web wins)")
-    d_sync.add_argument("project_id")
-    d_sync.add_argument("local_dir")
-    d_sync.set_defaults(func=_docs_sync)
-
     # ---- project ----
-    project = sub.add_parser("project", help="Project-level operations")
+    project = sub.add_parser("project", help="Project operations")
     prsub = project.add_subparsers(dest="action", metavar="<action>")
     prsub.required = True
+
+    pr_list = prsub.add_parser("list", help="List projects across every chat-capable org")
+    pr_list.set_defaults(func=_project_list)
+
+    pr_show = prsub.add_parser("show", help="Show a project's metadata")
+    pr_show.add_argument("project_id")
+    pr_show.set_defaults(func=_project_show)
 
     pr_export = prsub.add_parser("export", help="Export full project to a single markdown file")
     pr_export.add_argument("project_id")
     pr_export.add_argument("output_file")
     pr_export.set_defaults(func=_project_export)
 
-    pr_sync = prsub.add_parser(
-        "sync", help="Sync project to a directory (project.md, docs/, conversations/)"
+    pr_pull = prsub.add_parser(
+        "pull", help="Pull project to a directory (project.md, docs/, conversations/)"
     )
-    pr_sync.add_argument("project_id")
-    pr_sync.add_argument("output_dir")
-    pr_sync.set_defaults(func=_project_sync)
+    pr_pull.add_argument("project_id")
+    pr_pull.add_argument("output_dir")
+    _add_force_flag(pr_pull)
+    pr_pull.set_defaults(func=_project_pull)
 
     pr_migrate = prsub.add_parser(
         "migrate", help="Migrate a project's docs/conversations/memory to another project"
@@ -267,16 +273,49 @@ def _build_parser() -> argparse.ArgumentParser:
     pr_migrate.add_argument("--no-memory", action="store_true", help="Skip migrating memory")
     pr_migrate.set_defaults(func=_project_migrate)
 
+    # ---- docs ----
+    docs = sub.add_parser("docs", help="Knowledge doc operations")
+    dsub = docs.add_subparsers(dest="action", metavar="<action>")
+    dsub.required = True
+
+    d_list = dsub.add_parser("list", help="List docs in a project")
+    d_list.add_argument("project_id")
+    d_list.set_defaults(func=_docs_list)
+
+    d_get = dsub.add_parser("get", help="Print a doc's content")
+    d_get.add_argument("project_id")
+    d_get.add_argument("doc_id")
+    d_get.set_defaults(func=_docs_get)
+
+    d_push = dsub.add_parser("push", help="Push a file to a project (upserts by name)")
+    d_push.add_argument("project_id")
+    d_push.add_argument("file")
+    d_push.add_argument("--name", metavar="NAME", help="Override the file name in Claude")
+    d_push.set_defaults(func=_docs_push)
+
+    d_rm = dsub.add_parser("rm", help="Remove a doc from a project")
+    d_rm.add_argument("project_id")
+    d_rm.add_argument("doc_id", nargs="?", help="Omit when using --all")
+    d_rm.add_argument("--all", action="store_true", help="Remove every doc in the project")
+    d_rm.set_defaults(func=_docs_rm)
+
+    d_pull = dsub.add_parser("pull", help="Pull web docs → local folder (web wins)")
+    d_pull.add_argument("project_id")
+    d_pull.add_argument("local_dir")
+    _add_force_flag(d_pull)
+    d_pull.set_defaults(func=_docs_pull)
+
     # ---- account ----
     account = sub.add_parser("account", help="Account-wide operations (across all orgs)")
     asub = account.add_subparsers(dest="action", metavar="<action>")
     asub.required = True
 
-    a_export = asub.add_parser(
-        "export", help="Export every project across all chat-capable orgs to a directory"
+    a_pull = asub.add_parser(
+        "pull", help="Pull every project across all chat-capable orgs to a directory"
     )
-    a_export.add_argument("output_dir")
-    a_export.set_defaults(func=_account_export)
+    a_pull.add_argument("output_dir")
+    _add_force_flag(a_pull)
+    a_pull.set_defaults(func=_account_pull)
 
     # ---- conversations ----
     conversations = sub.add_parser("conversations", help="Conversation operations")
@@ -292,15 +331,11 @@ def _build_parser() -> argparse.ArgumentParser:
     c_get.add_argument("conversation_id")
     c_get.set_defaults(func=_conversations_get)
 
-    c_download = csub.add_parser("download", help="Download all conversations to a local folder")
-    c_download.add_argument("project_id")
-    c_download.add_argument("output_dir")
-    c_download.set_defaults(func=_conversations_download)
-
-    c_sync = csub.add_parser("sync", help="Sync web conversations → local folder (web wins)")
-    c_sync.add_argument("project_id")
-    c_sync.add_argument("local_dir")
-    c_sync.set_defaults(func=_conversations_sync)
+    c_pull = csub.add_parser("pull", help="Pull web conversations → local folder (web wins)")
+    c_pull.add_argument("project_id")
+    c_pull.add_argument("local_dir")
+    _add_force_flag(c_pull)
+    c_pull.set_defaults(func=_conversations_pull)
 
     return root
 

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TypedDict
 
 
@@ -82,7 +83,7 @@ class ConversationDetailDict(TypedDict):
     chat_messages: list[ChatMessageDict]
 
 
-@dataclass
+@dataclass(slots=True)
 class ProjectExport:
     """A Claude web project exported to a local representation."""
 
@@ -94,3 +95,12 @@ class ProjectExport:
     controls: list[str] = field(default_factory=list)
     docs: list[DocDict] = field(default_factory=list)
     conversations: list[ConversationDetailDict] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectSyncResult:
+    """Result of syncing a project's docs and conversations to a local directory."""
+
+    path: Path
+    docs: dict[str, str]
+    conversations: dict[str, str]
