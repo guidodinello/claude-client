@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from logger import get_logger
+from rich.progress import Progress, SpinnerColumn, TextColumn
+
+from .._transport import BASE_URL, Transport
+from ..exceptions import NotFoundError
+from ..models import ProjectDict, ProjectExport, ProjectSyncResult
+from ..render import render_project, render_project_metadata, slugify
+from .conversations import ConversationsResource
+from .docs import DocsResource
+from .memory import MemoryResource
+
+logger = get_logger(__name__)
+
+
+class ProjectsResource:
+    """
+    Projects, plus the composite operations that pull a project's docs,
+    conversations, and memory together (export/pull/pull_all).
+    """
+
+    def __init__(
+        self,
+        transport: Transport,
+        *,
+        docs: DocsResource,
+        conversations: ConversationsResource,
+        memory: MemoryResource,
+    ) -> None:
+        self._t = transport
+        self._docs = docs
+        self._conversations = conversations
+        self._memory = memory
+
+    # --------------------------------------------------------------- lookup
+
+    def list(self, *, org_id: str | None = None) -> list[tuple[str, ProjectDict]]:
+        """
+        List projects as (org_id, project) pairs.
+
+        Defaults to every chat-capable org on the account — pass org_id to scope to
+        just one. The org is always included in the result because a project id alone
+        isn't enough to operate on it again; on a multi-org account you need to know
+        which org it lives in.
+        """
+        org_ids = [org_id] if org_id else self._t.chat_capable_org_ids()
+        results: list[tuple[str, ProjectDict]] = []
+        for oid in org_ids:
+            resp = self._t.get(f"{BASE_URL}/organizations/{oid}/projects")
+            results.extend((oid, project) for project in resp.json())
+        return results
+
+    def get(self, project_id: str) -> ProjectDict:
+        resp = self._t.get(f"{BASE_URL}/organizations/{self._t.org_id}/projects/{project_id}")
+        return resp.json()
+
+    def find(self, name: str) -> tuple[str, ProjectDict]:
+        """
+        Find a project by exact name across every chat-capable org.
+
+        Returns (org_id, project) — same shape as `list()`, and for the same reason: a
+        project name alone isn't enough to act on it again on a multi-org account. If
+        more than one org has a project with this name, the first match wins and a
+        warning is logged; callers who need to disambiguate should use `list()` directly.
+        Raises NotFoundError if no org has a matching project.
+        """
+        matches = [(org_id, p) for org_id, p in self.list() if p.get("name") == name]
+        if not matches:
+            raise NotFoundError(f"Project '{name}' not found.")
+        if len(matches) > 1:
+            logger.warning(
+                "Project name '%s' matches %d projects across orgs; returning the first (org %s)",
+                name,
+                len(matches),
+                matches[0][0],
+            )
+        return matches[0]
+
+    def find_org(self, project_id: str) -> str:
+        """
+        Find which of this account's organizations owns a project.
+
+        Needed because `Transport.org_id` only auto-picks the *first* chat-capable org,
+        which isn't necessarily the one a given project lives in (accounts can belong
+        to multiple orgs). Raises NotFoundError if no org has this project.
+        """
+        for org in self._t.list_organizations():
+            resp = self._t.get(f"{BASE_URL}/organizations/{org['uuid']}/projects")
+            if any(p["uuid"] == project_id for p in resp.json()):
+                return str(org["uuid"])
+        raise NotFoundError(f"Project '{project_id}' not found in any organization.")
+
+    def update(
+        self,
+        project_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        instructions: str | None = None,
+    ) -> ProjectDict:
+        """Update project metadata. Only provided fields are sent."""
+        payload: dict[str, str] = {}
+        if name is not None:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        if instructions is not None:
+            payload["prompt_template"] = instructions
+        resp = self._t.put(
+            f"{BASE_URL}/organizations/{self._t.org_id}/projects/{project_id}", payload
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ------------------------------------------------------------- composite
+
+    def export_data(self, project_id: str) -> ProjectExport:
+        """
+        Download all project data into a ProjectExport object.
+
+        Includes title, description, instructions, generated memory, controls,
+        knowledge docs, and all conversations with their messages.
+        """
+        project = self.get(project_id)
+        docs_meta = self._docs.list(project_id)
+
+        docs = []
+        for meta in docs_meta:
+            try:
+                docs.append(self._docs.get(project_id, meta["uuid"]))
+            except Exception:
+                docs.append(meta)
+
+        memory_data = self._memory.get(project_id)
+
+        conversations = []
+        for conv in self._conversations.list(project_id):
+            try:
+                conversations.append(self._conversations.get(conv["uuid"]))
+            except Exception:
+                logger.warning(
+                    "Failed to fetch conversation %s for export, skipping",
+                    conv.get("uuid", "unknown"),
+                )
+
+        return ProjectExport(
+            uuid=project_id,
+            name=project.get("name", ""),
+            description=project.get("description", ""),
+            instructions=project.get("prompt_template", ""),
+            memory=memory_data.get("memory", ""),
+            controls=memory_data.get("controls", []),
+            docs=docs,
+            conversations=conversations,
+        )
+
+    def export(self, project_id: str) -> str:
+        """Render a project to a single markdown string (title, docs, and conversations)."""
+        with Progress(
+            SpinnerColumn(), TextColumn("{task.description}"), transient=True
+        ) as progress:
+            progress.add_task("Exporting project…")
+            data = self.export_data(project_id)
+        return render_project(data)
+
+    def pull(
+        self, project_id: str, output_dir: str | Path, *, force: bool = False
+    ) -> ProjectSyncResult:
+        """
+        Pull a project into a directory: project.md, docs/, conversations/.
+
+        project.md (name, description, instructions, memory, controls) is rewritten
+        every run — it's small and has no per-file identity to diff against. docs/ and
+        conversations/ are pulled incrementally via DocsResource.pull /
+        ConversationsResource.pull; pass force=True to make those unconditional too.
+        Returns the output directory path plus a per-file status for docs/conversations.
+        """
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        project = self.get(project_id)
+        memory_data = self._memory.get(project_id)
+        meta = ProjectExport(
+            uuid=project_id,
+            name=project.get("name", ""),
+            description=project.get("description", ""),
+            instructions=project.get("prompt_template", ""),
+            memory=memory_data.get("memory", ""),
+            controls=memory_data.get("controls", []),
+        )
+        (out / "project.md").write_text(render_project_metadata(meta), encoding="utf-8")
+
+        docs_results = self._docs.pull(project_id, out / "docs", force=force)
+        conversations_results = self._conversations.pull(
+            project_id, out / "conversations", force=force
+        )
+
+        return ProjectSyncResult(path=out, docs=docs_results, conversations=conversations_results)
+
+    def pull_all(self, out_dir: str | Path, *, force: bool = False) -> dict[str, bool]:
+        """
+        Pull every project across every chat-capable org on this account.
+
+        Writes {out_dir}/{project_slug}/{project.md,docs/,conversations/} per project
+        (see `pull`). Encapsulates the multi-org scoping so callers don't need their
+        own org-to-transport bookkeeping. Returns a map of project name -> success; one
+        project failing is logged and skipped, never aborts the rest.
+        """
+        out_root = Path(out_dir)
+        projects = self.list()
+
+        scoped: dict[str, ProjectsResource] = {}
+        results: dict[str, bool] = {}
+        for org_id, project in projects:
+            resource = scoped.setdefault(org_id, self._scoped(org_id))
+            name = project.get("name", project["uuid"])
+            try:
+                resource.pull(project["uuid"], out_root / slugify(name), force=force)
+                results[name] = True
+            except Exception:
+                logger.warning("Failed to pull project '%s', skipping", name)
+                results[name] = False
+
+        return results
+
+    def _scoped(self, org_id: str) -> ProjectsResource:
+        """A ProjectsResource (with matching docs/conversations/memory) pinned to org_id."""
+        transport = self._t.scoped(org_id)
+        docs = DocsResource(transport)
+        conversations = ConversationsResource(transport)
+        memory = MemoryResource(transport)
+        return ProjectsResource(transport, docs=docs, conversations=conversations, memory=memory)

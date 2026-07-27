@@ -4,16 +4,20 @@ Advisor-reviewed pass over the command groups in `claude_client/cli.py` (2026-07
 semantic grouping issues and naming incoherences. Findings below, ranked by how much they'd actually
 mislead a user.
 
-**Status (2026-07-26):** Findings #1 and #2 are fixed (see corrected diagnosis under #2 below).
-Finding #3 (`project`/`projects`) is being absorbed into a broader API redesign — see
-`todos.md` — rather than fixed standalone.
+**Status (2026-07-26):** All three findings are fixed. #1 and #2 were fixed directly (see
+corrected diagnosis under #2). #3 was resolved by a broader API redesign — the client is now
+resource-namespaced (`client.projects`, `client.docs`, `client.conversations`, `client.memory`,
+`client.orgs`), `download`/`sync` collapsed into one incremental `pull` (`--force` for the old
+always-overwrite behavior), and the `projects`/`project` split is gone. See the CLI section of
+`README.md` for the current command tree.
 
-## The yardstick
+## The yardstick (historical — see status above)
 
-`docs` and `conversations` are the coherent pattern to hold everything else to: same verb set
+`docs` and `conversations` were the coherent pattern to hold everything else to: same verb set
 (`list`/`get`/`download`/`sync`), parallel structure, and a clean distinction between `download`
 (dump, always overwrite) and `sync` (incremental, skips unchanged files — returns
-created/updated/unchanged per file).
+created/updated/unchanged per file). This shaped the fixes below; the redesign later generalized
+it into `pull`/`--force` across every resource, including `project` and `account`.
 
 ## Findings
 
@@ -73,7 +77,15 @@ matches the export scope.
 
 </details>
 
-### 3. `project` vs `projects` — near-duplicate top-level groups — PENDING (folded into API redesign)
+### 3. `project` vs `projects` — near-duplicate top-level groups — FIXED (API redesign)
+
+**Fix implemented:** `projects list` folded into `project list`; the `projects` group is gone.
+`project list` spans every chat-capable org by default (via `ProjectsResource.list()`), which
+resolves finding #2's "no command previews what `account pull` will act on" for free, exactly as
+originally proposed.
+
+<details>
+<summary>Original finding</summary>
 
 Two top-level command groups one character apart. Also breaks the yardstick pattern: `docs` and
 `conversations` each bundle collection-ops (`list`) and item-ops under one plural noun, but projects
@@ -82,10 +94,13 @@ splits `projects list` (collection) from `project export/sync/migrate` (item-lev
 **Fix:** fold `projects list` into `project list`, drop the `projects` group entirely. If that unified
 `list` is also made to span all orgs, this resolves finding #2 for free.
 
+</details>
+
 ## Left alone, deliberately
 
-- **`export` means different things in different groups** (`project export` → single file,
-  `account export` → directory tree). Worth a doc-comment/help-string clarification, not a rename —
-  the shapes are genuinely different operations that happen to share a verb.
+- **`export` still means different things in different groups** (`project export` → single markdown
+  file via `ProjectsResource.export()`, `project pull` / `account pull` → directory tree). The
+  redesign renamed the directory-tree operation to `pull` specifically to stop it colliding with
+  `export`'s single-file meaning — see `README.md`.
 - **`account` is named by scope-breadth, everything else by object-noun.** This was a deliberate,
-  discussed choice (see PR #1) over folding it into `project export-all` — not worth reopening.
+  discussed choice (see PR #1) over folding it into `project pull-all` — not worth reopening.

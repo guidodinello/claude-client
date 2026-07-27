@@ -1,5 +1,6 @@
 """Unit tests for ClaudeClient — HTTP layer mocked via unittest.mock."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -40,14 +41,51 @@ def client():
     return ClaudeClient(TOKEN)
 
 
-@patch("claude_client.client.requests")
+# ------------------------------------------------------------------------ org
+
+
+@patch("claude_client._transport.requests")
 def test_org_id(mock_req, client):
     mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
     assert client.org_id == ORG_ID
 
 
-@patch("claude_client.client.requests")
-def test_list_all_projects_across_multiple_orgs(mock_req, client):
+@patch("claude_client._transport.requests")
+def test_org_id_and_chat_capable_ids_share_one_fetch(mock_req, client):
+    """chat_capable_ids() and org_id both derive from the same cached org list —
+    touching both must not trigger a second /organizations round trip."""
+    mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
+
+    assert client.orgs.chat_capable_ids() == [ORG_ID]
+    assert client.org_id == ORG_ID
+
+    assert mock_req.get.call_count == 1
+
+
+def test_org_id_override_shadows_cached_property():
+    client = ClaudeClient(TOKEN, org_id="explicit-org")
+    assert client.org_id == "explicit-org"
+
+
+@patch("claude_client._transport.requests")
+def test_check_auth_raises_on_401(mock_req, client):
+    mock_req.get.return_value = _mock_response({}, status_code=401)
+    with pytest.raises(AuthError):
+        _ = client.org_id
+
+
+@patch("claude_client._transport.requests")
+def test_check_auth_raises_on_403(mock_req, client):
+    mock_req.get.return_value = _mock_response({}, status_code=403)
+    with pytest.raises(AuthError):
+        _ = client.org_id
+
+
+# -------------------------------------------------------------------- projects
+
+
+@patch("claude_client._transport.requests")
+def test_projects_list_spans_all_orgs_by_default(mock_req, client):
     other_org = {"uuid": "other-org", "capabilities": ["chat"], "name": "Other Org"}
     other_project = {
         "uuid": "other-proj",
@@ -56,12 +94,12 @@ def test_list_all_projects_across_multiple_orgs(mock_req, client):
         "prompt_template": "",
     }
     mock_req.get.side_effect = [
-        _mock_response([*ORGS_RESPONSE, other_org]),  # list_organizations
+        _mock_response([*ORGS_RESPONSE, other_org]),  # chat_capable_org_ids
         _mock_response(PROJECTS_RESPONSE),  # projects in first org
         _mock_response([other_project]),  # projects in second org
     ]
 
-    results = client.list_all_projects()
+    results = client.projects.list()
 
     assert results == [
         (ORG_ID, PROJECTS_RESPONSE[0]),
@@ -69,194 +107,251 @@ def test_list_all_projects_across_multiple_orgs(mock_req, client):
     ]
 
 
-@patch("claude_client.client.requests")
-def test_list_all_projects_skips_non_chat_orgs(mock_req, client):
+@patch("claude_client._transport.requests")
+def test_projects_list_skips_non_chat_orgs(mock_req, client):
     non_chat_org = {"uuid": "no-chat-org", "capabilities": ["other"], "name": "No Chat Org"}
     mock_req.get.side_effect = [
-        _mock_response([*ORGS_RESPONSE, non_chat_org]),  # list_organizations
+        _mock_response([*ORGS_RESPONSE, non_chat_org]),
         _mock_response(PROJECTS_RESPONSE),  # only the chat-capable org gets queried
     ]
 
-    results = client.list_all_projects()
+    results = client.projects.list()
 
     assert [org_id for org_id, _ in results] == [ORG_ID]
 
 
-@patch("claude_client.client.requests")
-def test_list_projects(mock_req, client):
+@patch("claude_client._transport.requests")
+def test_projects_list_scoped_to_one_org_skips_org_enumeration(mock_req, client):
+    mock_req.get.return_value = _mock_response(PROJECTS_RESPONSE)
+
+    results = client.projects.list(org_id=ORG_ID)
+
+    assert results == [(ORG_ID, PROJECTS_RESPONSE[0])]
+    assert mock_req.get.call_count == 1  # no chat_capable_org_ids() call needed
+
+
+@patch("claude_client._transport.requests")
+def test_projects_find(mock_req, client):
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
         _mock_response(PROJECTS_RESPONSE),
     ]
-    projects = client.list_projects()
-    assert len(projects) == 1
-    assert projects[0]["name"] == "My Project"
-
-
-@patch("claude_client.client.requests")
-def test_find_project(mock_req, client):
-    mock_req.get.side_effect = [
-        _mock_response(ORGS_RESPONSE),
-        _mock_response(PROJECTS_RESPONSE),
-    ]
-    p = client.find_project("My Project")
+    org_id, p = client.projects.find("My Project")
+    assert org_id == ORG_ID
     assert p["uuid"] == PROJECT_ID
 
 
-@patch("claude_client.client.requests")
-def test_find_project_not_found(mock_req, client):
+@patch("claude_client._transport.requests")
+def test_projects_find_returns_first_match_on_ambiguous_name(mock_req, client):
+    """A same-named project in two orgs must not error or silently drop information —
+    it returns the first match, org included, so the caller can tell which one."""
+    other_org = {"uuid": "other-org", "capabilities": ["chat"], "name": "Other Org"}
+    duplicate_project = {**PROJECTS_RESPONSE[0], "uuid": "other-proj-uuid"}
+    mock_req.get.side_effect = [
+        _mock_response([*ORGS_RESPONSE, other_org]),
+        _mock_response(PROJECTS_RESPONSE),
+        _mock_response([duplicate_project]),
+    ]
+
+    org_id, p = client.projects.find("My Project")
+
+    assert org_id == ORG_ID
+    assert p["uuid"] == PROJECT_ID
+
+
+@patch("claude_client._transport.requests")
+def test_projects_find_not_found(mock_req, client):
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
         _mock_response(PROJECTS_RESPONSE),
     ]
     with pytest.raises(NotFoundError):
-        client.find_project("Nonexistent")
+        client.projects.find("Nonexistent")
 
 
-@patch("claude_client.client.requests")
-def test_get_doc(mock_req, client):
+@patch("claude_client._transport.requests")
+def test_projects_find_org(mock_req, client):
+    other_org = {"uuid": "other-org", "capabilities": ["chat"], "name": "Other Org"}
+    mock_req.get.side_effect = [
+        _mock_response([*ORGS_RESPONSE, other_org]),  # list_organizations
+        _mock_response([]),  # projects in first org — not found here
+        _mock_response(PROJECTS_RESPONSE),  # projects in second org — found
+    ]
+    org = client.projects.find_org(PROJECT_ID)
+    assert org == "other-org"
+
+
+@patch("claude_client._transport.requests")
+def test_projects_find_org_not_found(mock_req, client):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([]),
+    ]
+    with pytest.raises(NotFoundError):
+        client.projects.find_org("missing-project")
+
+
+@patch("claude_client._transport.requests")
+def test_projects_update(mock_req, client):
+    mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
+    updated = {**PROJECT_RESPONSE, "prompt_template": "New instructions."}
+    mock_req.put.return_value = _mock_response(updated)
+
+    result = client.projects.update(PROJECT_ID, instructions="New instructions.")
+
+    assert result["prompt_template"] == "New instructions."
+    payload = json.loads(mock_req.put.call_args.kwargs["data"])
+    assert payload == {"prompt_template": "New instructions."}
+
+
+# ------------------------------------------------------------------------ docs
+
+
+@patch("claude_client._transport.requests")
+def test_docs_get(mock_req, client):
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
         _mock_response(DOC_FULL),
     ]
-    doc = client.get_doc(PROJECT_ID, DOC_UUID)
+    doc = client.docs.get(PROJECT_ID, DOC_UUID)
     assert doc["content"] == "hello world"
 
 
-@patch("claude_client.client.requests")
-def test_upload_content_success(mock_req, client):
-    created_doc = {**DOC_FULL}
-    mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
-    mock_req.post.return_value = _mock_response(created_doc, status_code=201)
-
-    doc = client.upload_content(PROJECT_ID, "hello world", "notes.md")
-    assert doc["uuid"] == DOC_UUID
-    call_kwargs = mock_req.post.call_args
-    import json
-
-    payload = json.loads(call_kwargs.kwargs["data"])
-    assert payload["file_name"] == "notes.md"
-    assert payload["content"] == "hello world"
-
-
-@patch("claude_client.client.requests")
-def test_upload_content_error(mock_req, client):
-    mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
-    mock_req.post.return_value = _mock_response({}, status_code=500)
-
-    with pytest.raises(UploadError):
-        client.upload_content(PROJECT_ID, "hello", "notes.md")
-
-
-@patch("claude_client.client.requests")
-def test_delete_doc(mock_req, client):
+@patch("claude_client._transport.requests")
+def test_docs_rm(mock_req, client):
     mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
     mock_req.delete.return_value = _mock_response(None, status_code=204)
 
-    client.delete_doc(PROJECT_ID, DOC_UUID)
+    client.docs.rm(PROJECT_ID, DOC_UUID)
     assert mock_req.delete.called
 
 
-@patch("claude_client.client.requests")
-def test_upsert_content_replaces_existing(mock_req, client):
+@patch("claude_client._transport.requests")
+def test_docs_rm_all(mock_req, client):
     mock_req.get.side_effect = [
-        _mock_response(ORGS_RESPONSE),  # org_id
-        _mock_response([DOC_META]),  # list_docs
-        _mock_response(ORGS_RESPONSE),  # org_id cached — skip (cached_property)
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([DOC_META, {**DOC_META, "uuid": "doc-2", "file_name": "b.md"}]),
     ]
     mock_req.delete.return_value = _mock_response(None, status_code=204)
+
+    count = client.docs.rm_all(PROJECT_ID)
+
+    assert count == 2
+    assert mock_req.delete.call_count == 2
+
+
+@patch("claude_client._transport.requests")
+def test_docs_push_many(mock_req, client, tmp_path):
+    file_a = tmp_path / "a.md"
+    file_b = tmp_path / "b.md"
+    file_a.write_text("content a")
+    file_b.write_text("content b")
+
+    # Each push_content call: list_docs (no existing match) then create.
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([]),
+        _mock_response([]),
+    ]
     mock_req.post.return_value = _mock_response({**DOC_FULL}, status_code=201)
 
-    client.upsert_content(PROJECT_ID, "new content", "notes.md")
+    results = client.docs.push_many(PROJECT_ID, [file_a, file_b], name_prefix="Proj__")
 
-    assert mock_req.delete.called
-    assert mock_req.post.called
+    assert results == {"Proj__a.md": True, "Proj__b.md": True}
+    assert mock_req.post.call_count == 2
 
 
-@patch("claude_client.client.requests")
-def test_upsert_content_wraps_upload_failure_after_delete(mock_req, client):
-    """If the re-upload fails after an existing doc was deleted, the error must
-    say so — the caller needs to know the original is gone."""
+@patch("claude_client._transport.requests")
+def test_docs_push_many_reports_per_file_failure(mock_req, client, tmp_path):
+    missing = tmp_path / "missing.md"  # never written — push() will raise FileNotFoundError
+
+    results = client.docs.push_many(PROJECT_ID, [missing])
+
+    assert results == {"missing.md": False}
+
+
+@patch("claude_client._transport.requests")
+def test_docs_push_content_creates_when_no_existing_doc(mock_req, client):
     mock_req.get.side_effect = [
-        _mock_response(ORGS_RESPONSE),  # org_id
-        _mock_response([DOC_META]),  # list_docs
-    ]
-    mock_req.delete.return_value = _mock_response(None, status_code=204)
-    mock_req.post.return_value = _mock_response({}, status_code=500)
-
-    with pytest.raises(UploadError, match="original has been removed"):
-        client.upsert_content(PROJECT_ID, "new content", "notes.md")
-
-    assert mock_req.delete.called
-    assert mock_req.post.called
-
-
-@patch("claude_client.client.requests")
-def test_upsert_content_no_existing_doc_does_not_wrap_error(mock_req, client):
-    """When there's no existing doc to delete, an upload failure should
-    propagate as the plain UploadError, without the delete-related message."""
-    mock_req.get.side_effect = [
-        _mock_response(ORGS_RESPONSE),  # org_id
+        _mock_response(ORGS_RESPONSE),
         _mock_response([]),  # list_docs — nothing matches
+    ]
+    mock_req.post.return_value = _mock_response({**DOC_FULL}, status_code=201)
+
+    doc = client.docs.push_content(PROJECT_ID, "hello world", "notes.md")
+
+    assert doc["uuid"] == DOC_UUID
+    assert not mock_req.delete.called
+    payload = json.loads(mock_req.post.call_args.kwargs["data"])
+    assert payload == {"file_name": "notes.md", "content": "hello world"}
+
+
+@patch("claude_client._transport.requests")
+def test_docs_push_content_error_no_existing_doc_not_wrapped(mock_req, client):
+    """When there's no existing doc to delete, an upload failure should propagate
+    as the plain UploadError, without the delete-related wrapper message."""
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([]),
     ]
     mock_req.post.return_value = _mock_response({}, status_code=500)
 
     with pytest.raises(UploadError) as exc_info:
-        client.upsert_content(PROJECT_ID, "new content", "notes.md")
+        client.docs.push_content(PROJECT_ID, "new content", "notes.md")
 
     assert "original has been removed" not in str(exc_info.value)
     assert not mock_req.delete.called
 
 
-@patch("claude_client.client.requests")
-def test_check_auth_raises_on_401(mock_req, client):
-    r = _mock_response({}, status_code=401)
-    mock_req.get.return_value = r
-
-    with pytest.raises(AuthError):
-        _ = client.org_id
-
-
-@patch("claude_client.client.requests")
-def test_check_auth_raises_on_403(mock_req, client):
-    r = _mock_response({}, status_code=403)
-    mock_req.get.return_value = r
-
-    with pytest.raises(AuthError):
-        _ = client.org_id
-
-
-@patch("claude_client.client.requests")
-def test_download_docs(mock_req, client, tmp_path):
+@patch("claude_client._transport.requests")
+def test_docs_push_content_replaces_existing(mock_req, client):
     mock_req.get.side_effect = [
-        _mock_response(ORGS_RESPONSE),  # org_id
-        _mock_response([DOC_META]),  # list_docs
-        _mock_response(DOC_FULL),  # get_doc
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([DOC_META]),  # list_docs — matching file_name found
     ]
+    mock_req.delete.return_value = _mock_response(None, status_code=204)
+    mock_req.post.return_value = _mock_response({**DOC_FULL}, status_code=201)
 
-    written = client.download_docs(PROJECT_ID, tmp_path)
+    client.docs.push_content(PROJECT_ID, "new content", "notes.md")
 
-    assert len(written) == 1
-    assert written[0] == tmp_path / "notes.md"
-    assert written[0].read_text() == "hello world"
+    assert mock_req.delete.called
+    assert mock_req.post.called
 
 
-@patch("claude_client.client.requests")
-def test_sync_from_web_created(mock_req, client, tmp_path):
+@patch("claude_client._transport.requests")
+def test_docs_push_content_wraps_failure_after_delete(mock_req, client):
+    """If the re-upload fails after an existing doc was deleted, the error must
+    say so — the caller needs to know the original is gone."""
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([DOC_META]),
+    ]
+    mock_req.delete.return_value = _mock_response(None, status_code=204)
+    mock_req.post.return_value = _mock_response({}, status_code=500)
+
+    with pytest.raises(UploadError, match="original has been removed"):
+        client.docs.push_content(PROJECT_ID, "new content", "notes.md")
+
+    assert mock_req.delete.called
+    assert mock_req.post.called
+
+
+@patch("claude_client._transport.requests")
+def test_docs_pull_created(mock_req, client, tmp_path):
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
         _mock_response([DOC_META]),
         _mock_response(DOC_FULL),
     ]
 
-    results = client.sync_from_web(PROJECT_ID, tmp_path)
+    results = client.docs.pull(PROJECT_ID, tmp_path)
 
     assert results["notes.md"] == "created"
     assert (tmp_path / "notes.md").read_text() == "hello world"
 
 
-@patch("claude_client.client.requests")
-def test_sync_from_web_unchanged(mock_req, client, tmp_path):
+@patch("claude_client._transport.requests")
+def test_docs_pull_unchanged(mock_req, client, tmp_path):
     (tmp_path / "notes.md").write_text("hello world")
 
     mock_req.get.side_effect = [
@@ -265,13 +360,13 @@ def test_sync_from_web_unchanged(mock_req, client, tmp_path):
         _mock_response(DOC_FULL),
     ]
 
-    results = client.sync_from_web(PROJECT_ID, tmp_path)
+    results = client.docs.pull(PROJECT_ID, tmp_path)
 
     assert results["notes.md"] == "unchanged"
 
 
-@patch("claude_client.client.requests")
-def test_sync_from_web_updated(mock_req, client, tmp_path):
+@patch("claude_client._transport.requests")
+def test_docs_pull_updated(mock_req, client, tmp_path):
     (tmp_path / "notes.md").write_text("old content")
 
     mock_req.get.side_effect = [
@@ -280,22 +375,37 @@ def test_sync_from_web_updated(mock_req, client, tmp_path):
         _mock_response(DOC_FULL),
     ]
 
-    results = client.sync_from_web(PROJECT_ID, tmp_path)
+    results = client.docs.pull(PROJECT_ID, tmp_path)
 
     assert results["notes.md"] == "updated"
     assert (tmp_path / "notes.md").read_text() == "hello world"
 
 
-@patch("claude_client.client.requests")
-def test_sync_from_web_skips_doc_on_fetch_failure(mock_req, client, tmp_path):
-    """A failed get_doc must be skipped, not written as empty content."""
+@patch("claude_client._transport.requests")
+def test_docs_pull_force_rewrites_unchanged_file(mock_req, client, tmp_path):
+    (tmp_path / "notes.md").write_text("hello world")  # already identical to web content
+
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([DOC_META]),
+        _mock_response(DOC_FULL),
+    ]
+
+    results = client.docs.pull(PROJECT_ID, tmp_path, force=True)
+
+    assert results["notes.md"] == "updated"  # not "unchanged" — force skips the comparison
+
+
+@patch("claude_client._transport.requests")
+def test_docs_pull_skips_doc_on_fetch_failure(mock_req, client, tmp_path):
+    """A failed get() must be skipped, not written as empty content."""
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
         _mock_response([DOC_META]),
         Exception("boom"),  # get_doc fails
     ]
 
-    results = client.sync_from_web(PROJECT_ID, tmp_path)
+    results = client.docs.pull(PROJECT_ID, tmp_path)
 
     assert results == {}
     assert not (tmp_path / "notes.md").exists()
@@ -352,27 +462,30 @@ CONVERSATION_DETAIL = {
 }
 
 
-@patch("claude_client.client.requests")
-def test_get_conversation(mock_req, client):
+# ----------------------------------------------------------------- conversations
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_get(mock_req, client):
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
         _mock_response(CONVERSATION_DETAIL),
     ]
 
-    conv = client.get_conversation(CONV_UUID)
+    conv = client.conversations.get(CONV_UUID)
 
     assert conv["uuid"] == CONV_UUID
     assert len(conv["chat_messages"]) == 2
 
 
-@patch("claude_client.client.requests")
-def test_list_all_conversations(mock_req, client):
+@patch("claude_client._transport.requests")
+def test_conversations_list(mock_req, client):
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
         _mock_response(CONV_PAGE_RESPONSE),
     ]
 
-    convs = client.list_all_conversations(PROJECT_ID)
+    convs = client.conversations.list(PROJECT_ID)
 
     assert len(convs) == 1
     assert convs[0]["name"] == "Test Chat"
@@ -452,23 +565,22 @@ def test_conversation_to_markdown_renders_tool_content():
     assert "It's sunny and 72°F." in md
 
 
-@patch("claude_client.client.requests")
-def test_sync_conversations_from_web_created(mock_req, client, tmp_path):
+@patch("claude_client._transport.requests")
+def test_conversations_pull_created(mock_req, client, tmp_path):
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
         _mock_response(CONV_PAGE_RESPONSE),
         _mock_response(CONVERSATION_DETAIL),
     ]
 
-    results = client.sync_conversations_from_web(PROJECT_ID, tmp_path)
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
 
     assert len(results) == 1
-    assert "test-chat-conv-uui.md" in results
     assert results["test-chat-conv-uui.md"] == "created"
 
 
-@patch("claude_client.client.requests")
-def test_sync_conversations_from_web_unchanged(mock_req, client, tmp_path):
+@patch("claude_client._transport.requests")
+def test_conversations_pull_unchanged(mock_req, client, tmp_path):
     md = conversation_to_markdown(CONVERSATION_DETAIL)
     (tmp_path / "test-chat-conv-uui.md").write_text(md)
 
@@ -478,13 +590,13 @@ def test_sync_conversations_from_web_unchanged(mock_req, client, tmp_path):
         _mock_response(CONVERSATION_DETAIL),
     ]
 
-    results = client.sync_conversations_from_web(PROJECT_ID, tmp_path)
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
 
     assert results["test-chat-conv-uui.md"] == "unchanged"
 
 
-@patch("claude_client.client.requests")
-def test_sync_conversations_from_web_updated(mock_req, client, tmp_path):
+@patch("claude_client._transport.requests")
+def test_conversations_pull_updated(mock_req, client, tmp_path):
     (tmp_path / "test-chat-conv-uui.md").write_text("old content")
 
     mock_req.get.side_effect = [
@@ -493,13 +605,17 @@ def test_sync_conversations_from_web_updated(mock_req, client, tmp_path):
         _mock_response(CONVERSATION_DETAIL),
     ]
 
-    results = client.sync_conversations_from_web(PROJECT_ID, tmp_path)
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
 
     assert results["test-chat-conv-uui.md"] == "updated"
 
 
-@patch("claude_client.client.requests")
-def test_export_project_to_dir(mock_req, client, tmp_path):
+# --------------------------------------------------------------------- projects
+# (composite: pull / pull_all, which pull docs + conversations + memory together)
+
+
+@patch("claude_client._transport.requests")
+def test_projects_pull(mock_req, client, tmp_path):
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),  # org_id
         _mock_response(PROJECT_RESPONSE),  # get_project
@@ -510,7 +626,7 @@ def test_export_project_to_dir(mock_req, client, tmp_path):
         _mock_response(CONVERSATION_DETAIL),  # get_conversation
     ]
 
-    result = client.export_project_to_dir(PROJECT_ID, tmp_path / "export")
+    result = client.projects.pull(PROJECT_ID, tmp_path / "export")
 
     out = result.path
     assert out == tmp_path / "export"
@@ -529,9 +645,9 @@ def test_export_project_to_dir(mock_req, client, tmp_path):
     assert result.conversations == {"test-chat-conv-uui.md": "created"}
 
 
-@patch("claude_client.client.requests")
-def test_export_project_to_dir_is_incremental(mock_req, client, tmp_path):
-    """A second sync into the same directory reports unchanged files, not rewrites."""
+@patch("claude_client._transport.requests")
+def test_projects_pull_is_incremental(mock_req, client, tmp_path):
+    """A second pull into the same directory reports unchanged files, not rewrites."""
     responses = [
         _mock_response(ORGS_RESPONSE),
         _mock_response(PROJECT_RESPONSE),
@@ -542,9 +658,9 @@ def test_export_project_to_dir_is_incremental(mock_req, client, tmp_path):
         _mock_response(CONVERSATION_DETAIL),
     ]
     mock_req.get.side_effect = responses
-    client.export_project_to_dir(PROJECT_ID, tmp_path / "export")
+    client.projects.pull(PROJECT_ID, tmp_path / "export")
 
-    # Second sync: identical content on the web side.
+    # Second pull: identical content on the web side.
     mock_req.get.side_effect = [
         _mock_response(PROJECT_RESPONSE),
         _mock_response(MEMORY_RESPONSE),
@@ -553,110 +669,63 @@ def test_export_project_to_dir_is_incremental(mock_req, client, tmp_path):
         _mock_response(CONV_PAGE_RESPONSE),
         _mock_response(CONVERSATION_DETAIL),
     ]
-    result = client.export_project_to_dir(PROJECT_ID, tmp_path / "export")
+    result = client.projects.pull(PROJECT_ID, tmp_path / "export")
 
     assert result.docs == {"notes.md": "unchanged"}
     assert result.conversations == {"test-chat-conv-uui.md": "unchanged"}
 
 
-@patch("claude_client.client.requests")
-def test_export_all_projects_to_dir_multi_org(mock_req, client, tmp_path):
+@patch("claude_client._transport.requests")
+def test_projects_pull_all_multi_org(mock_req, client, tmp_path):
     other_org = {"uuid": "other-org", "capabilities": ["chat"], "name": "Other Org"}
     project_a = {"uuid": "proj-a", "name": "Project A", "description": "", "prompt_template": ""}
     project_b = {"uuid": "proj-b", "name": "Project B", "description": "", "prompt_template": ""}
     empty_conv_page = {"data": [], "pagination": {"has_more": False}}
 
     mock_req.get.side_effect = [
-        _mock_response([*ORGS_RESPONSE, other_org]),  # list_all_projects: list_organizations
-        _mock_response([project_a]),  # list_all_projects: org 1 projects
-        _mock_response([project_b]),  # list_all_projects: org 2 projects
-        _mock_response(project_a),  # export proj-a: get_project
+        _mock_response([*ORGS_RESPONSE, other_org]),  # list(): chat_capable_org_ids
+        _mock_response([project_a]),  # list(): org 1 projects
+        _mock_response([project_b]),  # list(): org 2 projects
+        _mock_response(project_a),  # pull proj-a: get_project
         _mock_response(MEMORY_RESPONSE),
         _mock_response([]),  # list_docs
         _mock_response(empty_conv_page),  # list_conversations
-        _mock_response(project_b),  # export proj-b: get_project
+        _mock_response(project_b),  # pull proj-b: get_project
         _mock_response(MEMORY_RESPONSE),
         _mock_response([]),
         _mock_response(empty_conv_page),
     ]
 
-    results = client.export_all_projects_to_dir(tmp_path)
+    results = client.projects.pull_all(tmp_path)
 
     assert results == {"Project A": True, "Project B": True}
     assert (tmp_path / "project-a" / "project.md").exists()
     assert (tmp_path / "project-b" / "project.md").exists()
 
 
-@patch("claude_client.client.requests")
-def test_export_all_projects_to_dir_one_failure_does_not_abort_others(mock_req, client, tmp_path):
+@patch("claude_client._transport.requests")
+def test_projects_pull_all_one_failure_does_not_abort_others(mock_req, client, tmp_path):
     project_a = {"uuid": "proj-a", "name": "Project A", "description": "", "prompt_template": ""}
     project_b = {"uuid": "proj-b", "name": "Project B", "description": "", "prompt_template": ""}
     empty_conv_page = {"data": [], "pagination": {"has_more": False}}
 
     mock_req.get.side_effect = [
-        _mock_response(ORGS_RESPONSE),  # list_all_projects: list_organizations
-        _mock_response([project_a, project_b]),  # list_all_projects: projects in org
-        Exception("boom"),  # export proj-a: get_project raises
-        _mock_response(project_b),  # export proj-b: get_project
+        _mock_response(ORGS_RESPONSE),  # list(): chat_capable_org_ids
+        _mock_response([project_a, project_b]),  # list(): projects in org
+        Exception("boom"),  # pull proj-a: get_project raises
+        _mock_response(project_b),  # pull proj-b: get_project
         _mock_response(MEMORY_RESPONSE),
         _mock_response([]),
         _mock_response(empty_conv_page),
     ]
 
-    results = client.export_all_projects_to_dir(tmp_path)
+    results = client.projects.pull_all(tmp_path)
 
     assert results == {"Project A": False, "Project B": True}
     assert (tmp_path / "project-b" / "project.md").exists()
-    # export_project_to_dir creates the output dir before its first API call, so
-    # project-a's dir may exist, but it must be empty — the failure happened before
-    # anything was written into it.
+    # pull() creates the output dir before its first API call, so project-a's dir may
+    # exist, but it must be empty — the failure happened before anything was written.
     assert not (tmp_path / "project-a" / "project.md").exists()
-
-
-# ---------------------------------------------------------------- org targeting
-
-
-def test_org_id_override_shadows_cached_property():
-    client = ClaudeClient(TOKEN, org_id="explicit-org")
-    assert client.org_id == "explicit-org"
-
-
-@patch("claude_client.client.requests")
-def test_find_project_org(mock_req, client):
-    other_org = {"uuid": "other-org", "capabilities": ["chat"], "name": "Other Org"}
-    mock_req.get.side_effect = [
-        _mock_response([*ORGS_RESPONSE, other_org]),  # list_organizations
-        _mock_response([]),  # projects in first org — not found here
-        _mock_response(PROJECTS_RESPONSE),  # projects in second org — found
-    ]
-    org = client.find_project_org(PROJECT_ID)
-    assert org == "other-org"
-
-
-@patch("claude_client.client.requests")
-def test_find_project_org_not_found(mock_req, client):
-    mock_req.get.side_effect = [
-        _mock_response(ORGS_RESPONSE),
-        _mock_response([]),
-    ]
-    with pytest.raises(NotFoundError):
-        client.find_project_org("missing-project")
-
-
-@patch("claude_client.client.requests")
-def test_update_project(mock_req, client):
-    mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
-    updated = {**PROJECT_RESPONSE, "prompt_template": "New instructions."}
-    mock_req.put.return_value = _mock_response(updated)
-
-    result = client.update_project(PROJECT_ID, instructions="New instructions.")
-
-    assert result["prompt_template"] == "New instructions."
-
-    import json
-
-    payload = json.loads(mock_req.put.call_args.kwargs["data"])
-    assert payload == {"prompt_template": "New instructions."}
 
 
 # ------------------------------------------------------------------------ CLI
@@ -679,7 +748,7 @@ def test_parse_project_id_from_bare_uuid():
 # -------------------------------------------------------------------- migrate
 
 
-@patch("claude_client.client.requests")
+@patch("claude_client._transport.requests")
 def test_migrate_project_skips_update_when_source_has_no_metadata(mock_req):
     """An empty description/instructions must not trigger a PUT with an empty
     payload — the real API rejects that with 400 'must update at least one field'."""
@@ -690,13 +759,13 @@ def test_migrate_project_skips_update_when_source_has_no_metadata(mock_req):
 
     empty_project = {**PROJECT_RESPONSE, "description": "", "prompt_template": ""}
     mock_req.get.side_effect = [
-        _mock_response(empty_project),  # source.get_project
-        _mock_response([DOC_META]),  # source.list_docs
-        _mock_response(DOC_FULL),  # source.get_doc
-        _mock_response([]),  # dest.upsert_content -> dest.list_docs (no existing doc)
-        _mock_response({"data": [], "pagination": {"has_more": False}}),  # list_conversations
-        _mock_response(MEMORY_RESPONSE),  # source.get_memory
-        _mock_response([]),  # dest.upsert_content -> dest.list_docs (no existing doc)
+        _mock_response(empty_project),  # source.projects.get
+        _mock_response([DOC_META]),  # source.docs.list
+        _mock_response(DOC_FULL),  # source.docs.get
+        _mock_response([]),  # dest.docs.push_content -> dest.docs.list (no existing doc)
+        _mock_response({"data": [], "pagination": {"has_more": False}}),  # conversations.list
+        _mock_response(MEMORY_RESPONSE),  # source.memory.get
+        _mock_response([]),  # dest.docs.push_content -> dest.docs.list (no existing doc)
     ]
     mock_req.post.return_value = _mock_response(DOC_FULL, status_code=201)
 

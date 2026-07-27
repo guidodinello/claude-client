@@ -6,15 +6,13 @@ Python client for the Claude.ai web API — manage projects, sync files, and exp
 
 ## Features
 
-- List projects and knowledge docs
-- Upload, download, and delete docs
-- Upsert (upload or replace by name)
-- Sync docs from the web to a local folder
+- List, show, and update projects — across every org on the account by default
+- List, get, push (upsert), remove, and pull knowledge docs
+- List, get, and pull conversations as Markdown files
 - Export a full project to a single Markdown file (title, description, instructions, memory, docs, conversations)
-- Sync a full project to a local directory (project.md, docs/, conversations/)
-- Export and sync conversations as Markdown files
+- Pull a full project to a local directory (project.md, docs/, conversations/) — incremental by default, `--force` to always rewrite
 - Migrate a project's docs, conversations, and memory to another project — even across accounts/orgs
-- CLI for all operations
+- Resource-namespaced Python client (`client.projects`, `client.docs`, `client.conversations`, `client.memory`, `client.orgs`) and matching CLI
 
 ## Installation
 
@@ -42,27 +40,29 @@ Or pass it directly via `--token` (CLI) or the `session_token` argument (Python)
 
 ## CLI usage
 
+Every group follows the same verb set: `list` / `get` (or `show`) and `pull` — one incremental
+verb per resource, always skipping unchanged files unless you pass `--force`.
+
 ```bash
-# List all projects
-claude-client projects list
+# List projects across every chat-capable org on the account
+claude-client project list
 
-# List docs in a project
+# Show a project's metadata
+claude-client project show <project-id>
+
+# List / get / push / remove / pull knowledge docs
 claude-client docs list <project-id>
-
-# Upload a file
-claude-client docs upload <project-id> path/to/file.md
-
-# Download all docs to a local folder
-claude-client docs download <project-id> ./output/
-
-# Sync web → local (web wins, skips unchanged files)
-claude-client docs sync <project-id> ./local-docs/
+claude-client docs get <project-id> <doc-id>
+claude-client docs push <project-id> path/to/file.md      # upserts by name
+claude-client docs rm <project-id> <doc-id>
+claude-client docs pull <project-id> ./local-docs/         # incremental; add --force to always rewrite
 
 # Export full project to a single markdown file
 claude-client project export <project-id> export.md
 
-# Sync project to a directory (project.md, docs/, conversations/)
-claude-client project sync <project-id> ./my-project/
+# Pull a project to a directory (project.md, docs/, conversations/), incrementally
+claude-client project pull <project-id> ./my-project/
+claude-client project pull <project-id> ./my-project/ --force
 
 # Migrate a project's docs, conversations, and memory to another project
 # (source/dest accept a bare project id or a full claude.ai project URL;
@@ -77,43 +77,46 @@ claude-client project migrate <source> <dest> --dest-token ... --no-conversation
 # Conversation operations
 claude-client conversations list <project-id>
 claude-client conversations get <project-id> <conversation-id>
-claude-client conversations download <project-id> ./output/
-claude-client conversations sync <project-id> ./local-convos/
+claude-client conversations pull <project-id> ./local-convos/
+
+# Pull every project across every chat-capable org to a directory
+claude-client account pull ./all-projects/
 ```
 
 ## Python usage
+
+The client is namespaced by resource, matching the CLI groups above:
 
 ```python
 from claude_client import ClaudeClient
 
 client = ClaudeClient()  # reads CLAUDE_SESSION_TOKEN from env
 
-# List projects
-projects = client.list_projects()
+# Projects — list() spans every chat-capable org by default, returning (org_id, project) pairs
+projects = client.projects.list()
+project = client.projects.get(project_id)
+client.projects.update(project_id, description="New description")
 
-# Upload a file
-client.upload_file(project_id, "notes.md")
+# Docs — push always upserts (replaces any existing doc with the same name)
+client.docs.push(project_id, "notes.md")
+client.docs.push_content(project_id, "raw text", "notes.md")
+client.docs.push_many(project_id, ["a.md", "b.md"], name_prefix="MyProject__")
+client.docs.rm(project_id, doc_id)
+client.docs.rm_all(project_id)
 
-# Upsert (replace if exists, upload if not)
-client.upsert_file(project_id, "notes.md")
+# Pull docs incrementally (skips files whose content already matches); pass force=True to
+# always rewrite
+client.docs.pull(project_id, "./local-docs/")
 
-# Sync multiple files
-client.sync_files(project_id, ["a.md", "b.md"], name_prefix="MyProject__")
+# Conversations
+convs = client.conversations.list(project_id)
+conv = client.conversations.get(conversation_id)
+client.conversations.pull(project_id, "./local-convos/")
 
-# Export project to a single markdown file
-client.export_project_to_file(project_id, "export.md")
-
-# Sync project to a directory (project.md, docs/, conversations/)
-client.export_project_to_dir(project_id, "./my-project/")
-
-# Export all conversations as markdown files
-client.export_conversations_to_files(project_id, "./convos/")
-
-# Sync conversations from web (web wins, skips unchanged)
-client.sync_conversations_from_web(project_id, "./local-convos/")
-
-# Get a single conversation as markdown
-markdown = client.export_conversation_to_file(conv_id, "conv.md")
+# Project composite operations
+markdown = client.projects.export(project_id)  # single markdown string
+client.projects.pull(project_id, "./my-project/")  # project.md, docs/, conversations/
+client.projects.pull_all("./all-projects/")  # every project, every org
 
 # Migrate a project's docs/conversations/memory to another project, possibly
 # across accounts and orgs (two separate clients, one per account)

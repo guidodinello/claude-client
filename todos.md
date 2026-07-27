@@ -1,4 +1,4 @@
-- [ ] the claude client is getting quite big, should we fragment it into auth/project/docs services? and the main client works as an sdk? — see plan `hey-the-other-day-encapsulated-shamir.md` Part 2 (resource sub-clients: `client.projects`, `client.docs`, `client.conversations`, `client.memory`)
+- [x] the claude client is getting quite big, should we fragment it into auth/project/docs services? and the main client works as an sdk? — done: `_transport.py` (auth/HTTP core) + `resources/` (`orgs`, `projects`, `docs`, `conversations`, `memory`), composed by `ClaudeClient`
 - [x] also we could implement a cli tool to interact with the claude client, for example to upload/download files, sync projects, export project memory, etc.
 - [x] adhere to coding standards and best practices. see claude md
 - [x] add tests
@@ -6,4 +6,4 @@
 - [x] we should be able to download the conversations (or just one by id?) of a project as markdown files, maybe one file per conversation. this should be part of the export project to markdown feature.
 - [ ] avoid n+1 on conversations requests
 - [x] CLI command grouping/naming cleanup, part 1 (behavior fixes) — see [`docs/cli-consistency-review.md`](docs/cli-consistency-review.md): per-project org resolution, `project sync` now incremental, sync fetch-failure behavior aligned
-- [ ] CLI command grouping/naming cleanup, part 2 (API redesign: resource sub-clients, `pull`/`push` verbs, drop `projects` group) — see [`docs/cli-consistency-review.md`](docs/cli-consistency-review.md)
+- [x] CLI command grouping/naming cleanup, part 2 (API redesign: resource sub-clients, `pull`/`push` verbs, drop `projects` group) — see [`docs/cli-consistency-review.md`](docs/cli-consistency-review.md)

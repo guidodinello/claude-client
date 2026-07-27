@@ -30,14 +30,14 @@ def _args() -> argparse.Namespace:
     return argparse.Namespace(token=TOKEN)
 
 
-@patch("claude_client.client.requests")
+@patch("claude_client._transport.requests")
 def test_client_without_project_id_skips_org_resolution(mock_req):
     _client(_args())
     # No API calls at all — org resolution is only attempted when a project id is given.
     mock_req.get.assert_not_called()
 
 
-@patch("claude_client.client.requests")
+@patch("claude_client._transport.requests")
 def test_client_single_org_account_skips_lookup(mock_req):
     mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
 
@@ -51,7 +51,7 @@ def test_client_single_org_account_skips_lookup(mock_req):
     assert mock_req.get.call_count == 1
 
 
-@patch("claude_client.client.requests")
+@patch("claude_client._transport.requests")
 def test_client_multi_org_account_resolves_owning_org(mock_req):
     mock_req.get.side_effect = [
         _mock_response(MULTI_ORGS_RESPONSE),  # chat_capable_org_ids()
