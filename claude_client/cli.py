@@ -30,8 +30,20 @@ def _client(args: argparse.Namespace, project_id: str | None = None) -> ClaudeCl
     if not token:
         sys.exit("Error: CLAUDE_SESSION_TOKEN not set. Pass --token or export the env var.")
     client = ClaudeClient(token)
-    if project_id is None or len(client.chat_capable_org_ids()) <= 1:
+    if project_id is None:
         return client
+
+    org_ids = client.chat_capable_org_ids()
+    if len(org_ids) == 1:
+        # Pin org_id directly from what we already fetched — avoids a second
+        # /organizations round trip when something later touches `client.org_id`.
+        client.__dict__["org_id"] = org_ids[0]
+        return client
+    if len(org_ids) == 0:
+        # No chat-capable org at all: let `client.org_id` raise its ValueError lazily,
+        # same as before this helper existed.
+        return client
+
     org_id = client.find_project_org(project_id)
     return client.scoped_client(org_id)
 
@@ -179,7 +191,7 @@ def _conversations_list(args: argparse.Namespace) -> None:
 
 def _conversations_get(args: argparse.Namespace) -> None:
     client = _client(args, args.project_id)
-    conv = client.get_conversation(args.project_id, args.conversation_id)
+    conv = client.get_conversation(args.conversation_id)
     content = conversation_to_markdown(conv)
     print(content)
 

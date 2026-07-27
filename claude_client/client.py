@@ -346,19 +346,22 @@ class ClaudeClient:
             offset += limit
         return results
 
-    def get_conversation(self, project_id: str, conversation_id: str) -> ConversationDetailDict:
-        """Fetch a single conversation with full message content."""
+    def get_conversation(self, conversation_id: str) -> ConversationDetailDict:
+        """
+        Fetch a single conversation with full message content.
+
+        Conversation ids are unique within an org, so this doesn't need a project id —
+        unlike `list_conversations`, which lists within one project's scope.
+        """
         resp = self._get(
             f"{BASE_URL}/organizations/{self.org_id}/chat_conversations/{conversation_id}"
             f"?tree=True&rendering_mode=messages&render_all_tools=true&consistency=eventual"
         )
         return resp.json()
 
-    def export_conversation_to_file(
-        self, project_id: str, conversation_id: str, output_path: str | Path
-    ) -> Path:
+    def export_conversation_to_file(self, conversation_id: str, output_path: str | Path) -> Path:
         """Export a single conversation to a markdown file."""
-        conv = self.get_conversation(project_id, conversation_id)
+        conv = self.get_conversation(conversation_id)
         content = conversation_to_markdown(conv)
         out = Path(output_path)
         out.write_text(content, encoding="utf-8")
@@ -374,7 +377,7 @@ class ClaudeClient:
             self.list_all_conversations(project_id), description="Exporting conversations…"
         ):
             try:
-                conv = self.get_conversation(project_id, conv_meta["uuid"])
+                conv = self.get_conversation(conv_meta["uuid"])
                 content = conversation_to_markdown(conv)
                 filename = conversation_filename(conv)
                 dest = out / filename
@@ -399,7 +402,7 @@ class ClaudeClient:
             self.list_all_conversations(project_id), description="Syncing conversations…"
         ):
             try:
-                conv = self.get_conversation(project_id, conv_meta["uuid"])
+                conv = self.get_conversation(conv_meta["uuid"])
             except Exception:
                 logger.warning(
                     "Failed to fetch conversation %s, skipping",
@@ -460,7 +463,7 @@ class ClaudeClient:
         conversations = []
         for conv in self.list_all_conversations(project_id):
             try:
-                conv_detail = self.get_conversation(project_id, conv["uuid"])
+                conv_detail = self.get_conversation(conv["uuid"])
                 conversations.append(conv_detail)
             except Exception:
                 logger.warning(

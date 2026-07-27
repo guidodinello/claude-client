@@ -47,7 +47,7 @@ def migrate_project(
         convs = source.list_all_conversations(source_project_id)
         for conv_meta in track(convs, description="Migrating conversations…"):
             try:
-                conv = source.get_conversation(source_project_id, conv_meta["uuid"])
+                conv = source.get_conversation(conv_meta["uuid"])
             except Exception:
                 logger.warning(
                     "Failed to fetch conversation %s, skipping", conv_meta.get("uuid", "unknown")

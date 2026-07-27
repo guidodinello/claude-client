@@ -113,7 +113,7 @@ client.export_conversations_to_files(project_id, "./convos/")
 client.sync_conversations_from_web(project_id, "./local-convos/")
 
 # Get a single conversation as markdown
-markdown = client.export_conversation_to_file(project_id, conv_id, "conv.md")
+markdown = client.export_conversation_to_file(conv_id, "conv.md")
 
 # Migrate a project's docs/conversations/memory to another project, possibly
 # across accounts and orgs (two separate clients, one per account)

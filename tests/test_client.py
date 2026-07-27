@@ -359,7 +359,7 @@ def test_get_conversation(mock_req, client):
         _mock_response(CONVERSATION_DETAIL),
     ]
 
-    conv = client.get_conversation(PROJECT_ID, CONV_UUID)
+    conv = client.get_conversation(CONV_UUID)
 
     assert conv["uuid"] == CONV_UUID
     assert len(conv["chat_messages"]) == 2
