@@ -5,5 +5,6 @@
 - [x] we should have a method to export a project knowledge documents to a local folder as markdown files. also a sync one to keep local up to date with the web project. (maybe also a mirror set, local to web?)
 - [x] we should be able to download the conversations (or just one by id?) of a project as markdown files, maybe one file per conversation. this should be part of the export project to markdown feature.
 - [ ] avoid n+1 on conversations requests
+- [ ] resource methods assume the wrong org on multi-org accounts for direct library callers — see [`docs/00-bugs.md`](docs/00-bugs.md)
 - [x] CLI command grouping/naming cleanup, part 1 (behavior fixes) — see [`docs/cli-consistency-review.md`](docs/cli-consistency-review.md): per-project org resolution, `project sync` now incremental, sync fetch-failure behavior aligned
 - [x] CLI command grouping/naming cleanup, part 2 (API redesign: resource sub-clients, `pull`/`push` verbs, drop `projects` group) — see [`docs/cli-consistency-review.md`](docs/cli-consistency-review.md)

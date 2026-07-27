@@ -4,6 +4,7 @@ import argparse
 import os
 import re
 import sys
+from pathlib import Path
 
 from logger import init_logging
 
@@ -76,9 +77,11 @@ def _project_show(args: argparse.Namespace) -> None:
 def _project_export(args: argparse.Namespace) -> None:
     client = _client(args, args.project_id)
     markdown = client.projects.export(args.project_id)
-    with open(args.output_file, "w", encoding="utf-8") as f:
-        f.write(markdown)
-    print(f"Exported to {args.output_file}")
+    out = Path(args.output_file)
+    if out.is_dir():
+        out = out / f"{args.project_id}.md"
+    out.write_text(markdown, encoding="utf-8")
+    print(f"Exported to {out}")
 
 
 def _project_pull(args: argparse.Namespace) -> None:

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from http import HTTPStatus
 from pathlib import Path
 
+from curl_cffi import requests
 from logger import get_logger
 from rich.progress import track
 
@@ -53,21 +54,18 @@ class DocsResource:
         """
         Upsert doc content by name: replaces any existing doc with the same name.
 
-        Always upserts (never creates a duplicate on re-push) — the doc/file
-        distinction that mattered for the old upload/upsert split doesn't apply
-        here, since content is already in hand either way.
+        Creates the new doc before deleting the old one, so a failed create leaves the
+        original untouched instead of losing it. The API tolerates two docs sharing a
+        file_name for the moment they briefly coexist. Always upserts (never creates a
+        duplicate on re-push) — the doc/file distinction that mattered for the old
+        upload/upsert split doesn't apply here, since content is already in hand
+        either way.
         """
         existing = next((d for d in self.list(project_id) if d.get("file_name") == name), None)
-        if existing is None:
-            return self._create(project_id, content, name)
-        self.rm(project_id, existing["uuid"])
-        try:
-            return self._create(project_id, content, name)
-        except Exception as exc:
-            raise UploadError(
-                f"Push of '{name}' failed after deleting the existing doc; "
-                f"the original has been removed from the project."
-            ) from exc
+        new_doc = self._create(project_id, content, name)
+        if existing is not None:
+            self.rm(project_id, existing["uuid"])
+        return new_doc
 
     def push(self, project_id: str, file_path: str | Path, *, name: str | None = None) -> DocDict:
         """Upsert a doc from a local file."""
@@ -88,7 +86,7 @@ class DocsResource:
             try:
                 self.push(project_id, path, name=name)
                 results[name] = True
-            except Exception as exc:
+            except (UploadError, FileNotFoundError, requests.exceptions.RequestException) as exc:
                 results[name] = False
                 logger.warning("Failed to push '%s': %s", name, exc)
         return results
@@ -122,7 +120,7 @@ class DocsResource:
         for meta in track(docs_meta, description="Pulling docs…"):
             try:
                 doc = self.get(project_id, meta["uuid"])
-            except Exception:
+            except requests.exceptions.RequestException:
                 logger.warning("Failed to fetch doc %s, skipping", meta.get("uuid", "unknown"))
                 continue
             name = _ensure_md(doc.get("file_name", doc["uuid"]))

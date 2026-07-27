@@ -1,5 +1,6 @@
 """Migrate a project's content from one Claude.ai account/org to another."""
 
+from curl_cffi import requests
 from logger import get_logger
 from rich.progress import track
 
@@ -48,7 +49,7 @@ def migrate_project(
         for conv_meta in track(convs, description="Migrating conversations…"):
             try:
                 conv = source.conversations.get(conv_meta["uuid"])
-            except Exception:
+            except requests.exceptions.RequestException:
                 logger.warning(
                     "Failed to fetch conversation %s, skipping", conv_meta.get("uuid", "unknown")
                 )

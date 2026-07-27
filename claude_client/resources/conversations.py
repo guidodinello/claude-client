@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from curl_cffi import requests
 from logger import get_logger
 from rich.progress import track
 
@@ -71,7 +72,7 @@ class ConversationsResource:
         for conv_meta in track(self.list(project_id), description="Pulling conversations…"):
             try:
                 conv = self.get(conv_meta["uuid"])
-            except Exception:
+            except requests.exceptions.RequestException:
                 logger.warning(
                     "Failed to fetch conversation %s, skipping", conv_meta.get("uuid", "unknown")
                 )

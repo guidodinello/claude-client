@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from curl_cffi import requests
 from logger import get_logger
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -131,7 +132,11 @@ class ProjectsResource:
         for meta in docs_meta:
             try:
                 docs.append(self._docs.get(project_id, meta["uuid"]))
-            except Exception:
+            except requests.exceptions.RequestException:
+                logger.warning(
+                    "Failed to fetch doc %s for export, using metadata only",
+                    meta.get("uuid", "unknown"),
+                )
                 docs.append(meta)
 
         memory_data = self._memory.get(project_id)
@@ -140,7 +145,7 @@ class ProjectsResource:
         for conv in self._conversations.list(project_id):
             try:
                 conversations.append(self._conversations.get(conv["uuid"]))
-            except Exception:
+            except requests.exceptions.RequestException:
                 logger.warning(
                     "Failed to fetch conversation %s for export, skipping",
                     conv.get("uuid", "unknown"),
@@ -220,7 +225,7 @@ class ProjectsResource:
             try:
                 resource.pull(project["uuid"], out_root / slugify(name), force=force)
                 results[name] = True
-            except Exception:
+            except requests.exceptions.RequestException:
                 logger.warning("Failed to pull project '%s', skipping", name)
                 results[name] = False
 

@@ -4,6 +4,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from curl_cffi.requests.exceptions import RequestException
 
 from claude_client import AuthError, ClaudeClient, NotFoundError, UploadError
 from claude_client.render import conversation_to_markdown, slugify
@@ -319,21 +320,20 @@ def test_docs_push_content_replaces_existing(mock_req, client):
 
 
 @patch("claude_client._transport.requests")
-def test_docs_push_content_wraps_failure_after_delete(mock_req, client):
-    """If the re-upload fails after an existing doc was deleted, the error must
-    say so — the caller needs to know the original is gone."""
+def test_docs_push_content_failure_with_existing_doc_leaves_original(mock_req, client):
+    """Create happens before delete, so a failed create must not touch the
+    existing doc — the caller shouldn't lose it."""
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
         _mock_response([DOC_META]),
     ]
-    mock_req.delete.return_value = _mock_response(None, status_code=204)
     mock_req.post.return_value = _mock_response({}, status_code=500)
 
-    with pytest.raises(UploadError, match="original has been removed"):
+    with pytest.raises(UploadError):
         client.docs.push_content(PROJECT_ID, "new content", "notes.md")
 
-    assert mock_req.delete.called
     assert mock_req.post.called
+    assert not mock_req.delete.called
 
 
 @patch("claude_client._transport.requests")
@@ -402,7 +402,7 @@ def test_docs_pull_skips_doc_on_fetch_failure(mock_req, client, tmp_path):
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
         _mock_response([DOC_META]),
-        Exception("boom"),  # get_doc fails
+        RequestException("boom"),  # get_doc fails
     ]
 
     results = client.docs.pull(PROJECT_ID, tmp_path)
@@ -712,7 +712,7 @@ def test_projects_pull_all_one_failure_does_not_abort_others(mock_req, client, t
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),  # list(): chat_capable_org_ids
         _mock_response([project_a, project_b]),  # list(): projects in org
-        Exception("boom"),  # pull proj-a: get_project raises
+        RequestException("boom"),  # pull proj-a: get_project raises
         _mock_response(project_b),  # pull proj-b: get_project
         _mock_response(MEMORY_RESPONSE),
         _mock_response([]),

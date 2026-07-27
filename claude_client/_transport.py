@@ -92,6 +92,7 @@ class Transport:
             timeout=_DEFAULT_TIMEOUT,
         )
         self._check_auth(resp)
+        resp.raise_for_status()
         return resp
 
     def put(self, url: str, payload: dict) -> requests.Response:
@@ -103,6 +104,7 @@ class Transport:
             timeout=_DEFAULT_TIMEOUT,
         )
         self._check_auth(resp)
+        resp.raise_for_status()
         return resp
 
     def delete(self, url: str) -> requests.Response:
