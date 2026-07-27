@@ -83,7 +83,7 @@ class ConversationDetailDict(TypedDict):
     chat_messages: list[ChatMessageDict]
 
 
-@dataclass
+@dataclass(slots=True)
 class ProjectExport:
     """A Claude web project exported to a local representation."""
 
