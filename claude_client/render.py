@@ -100,18 +100,19 @@ def conversation_to_markdown(conv: ConversationDetailDict) -> str:
     return "\n".join(lines)
 
 
+def slugify(s: str, fallback: str = "untitled") -> str:
+    """Sanitize a string into a lowercase, hyphen-separated slug safe for filenames."""
+    s = re.sub(r"[^\w\-]", "-", s)
+    s = re.sub(r"-+", "-", s)
+    s = s.lower().strip("-")
+    return s[:50] or fallback
+
+
 def conversation_filename(conv: ConversationDetailDict) -> str:
     """Generate a sanitized filename from conversation name."""
-
-    def simplify(s: str) -> str:
-        s = re.sub(r"[^\w\-]", "-", s)
-        s = re.sub(r"-+", "-", s)
-        s = s.lower().strip("-")
-        return s[:50] or "conversation"
-
     name = conv.get("name", "Untitled")
     uuid = conv.get("uuid", "")
-    return f"{simplify(name)}-{uuid[:8]}.md"
+    return f"{slugify(name, fallback='conversation')}-{uuid[:8]}.md"
 
 
 def render_project_metadata(export: ProjectExport) -> str:

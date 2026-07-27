@@ -25,6 +25,7 @@ from .render import (
     conversation_to_markdown,
     render_project,
     render_project_metadata,
+    slugify,
 )
 
 logger = get_logger(__name__)
@@ -56,6 +57,7 @@ class ClaudeClient:
         token = session_token or os.getenv("CLAUDE_SESSION_TOKEN")
         if not token:
             raise ValueError("Session token required. Pass it or set CLAUDE_SESSION_TOKEN.")
+        self._session_token = token
         self._cookie = f"sessionKey={token}"
         if org_id is not None:
             # Shadows the `org_id` cached_property: it's a non-data descriptor, so an
@@ -65,8 +67,13 @@ class ClaudeClient:
     # ------------------------------------------------------------------ auth
 
     def update_token(self, session_token: str) -> None:
+        self._session_token = session_token
         self._cookie = f"sessionKey={session_token}"
         self.__dict__.pop("org_id", None)
+
+    def _scoped_client(self, org_id: str) -> "ClaudeClient":
+        """A client sharing this account's token but pinned to a specific org."""
+        return ClaudeClient(self._session_token, org_id=org_id)
 
     # ------------------------------------------------------------ internals
 
@@ -142,17 +149,37 @@ class ClaudeClient:
         resp = self._get(f"{BASE_URL}/organizations")
         return resp.json()
 
+    def chat_capable_org_ids(self) -> list[str]:
+        """Every org uuid on this account with 'chat' or 'claude_pro' capabilities."""
+        return [
+            str(org["uuid"])
+            for org in self.list_organizations()
+            if "chat" in org.get("capabilities", []) or "claude_pro" in org.get("capabilities", [])
+        ]
+
     @cached_property
     def org_id(self) -> str:
-        for org in self.list_organizations():
-            caps = org.get("capabilities", [])
-            if "chat" in caps or "claude_pro" in caps:
-                return str(org["uuid"])
-        raise ValueError("No org found with 'chat' or 'claude_pro' capabilities.")
+        org_ids = self.chat_capable_org_ids()
+        if not org_ids:
+            raise ValueError("No org found with 'chat' or 'claude_pro' capabilities.")
+        return org_ids[0]
 
     def list_projects(self) -> list[ProjectDict]:
         resp = self._get(f"{BASE_URL}/organizations/{self.org_id}/projects")
         return resp.json()
+
+    def list_all_projects(self) -> list[tuple[str, ProjectDict]]:
+        """
+        List every project across all chat-capable orgs on this account.
+
+        Returns (org_id, project) pairs — useful when an account belongs to multiple
+        orgs and you want every project regardless of which org owns it.
+        """
+        results: list[tuple[str, ProjectDict]] = []
+        for org_id in self.chat_capable_org_ids():
+            resp = self._get(f"{BASE_URL}/organizations/{org_id}/projects")
+            results.extend((org_id, project) for project in resp.json())
+        return results
 
     def get_project(self, project_id: str) -> ProjectDict:
         resp = self._get(f"{BASE_URL}/organizations/{self.org_id}/projects/{project_id}")
@@ -491,6 +518,32 @@ class ClaudeClient:
         self.export_conversations_to_files(project_id, out / "conversations")
 
         return out
+
+    def export_all_projects_to_dir(self, out_dir: str | Path) -> dict[str, bool]:
+        """
+        Export every project across every chat-capable org on this account.
+
+        Writes {out_dir}/{project_slug}/{project.md,docs/,conversations/} per project
+        (see export_project_to_dir). Encapsulates the multi-org scoping so callers don't
+        need their own org-to-client bookkeeping. Returns a map of project name -> success;
+        one project failing is logged and skipped, never aborts the rest.
+        """
+        out_root = Path(out_dir)
+        projects = self.list_all_projects()
+
+        scoped_clients: dict[str, ClaudeClient] = {}
+        results: dict[str, bool] = {}
+        for org_id, project in projects:
+            client = scoped_clients.setdefault(org_id, self._scoped_client(org_id))
+            name = project.get("name", project["uuid"])
+            try:
+                client.export_project_to_dir(project["uuid"], out_root / slugify(name))
+                results[name] = True
+            except Exception:
+                logger.warning("Failed to export project '%s', skipping", name)
+                results[name] = False
+
+        return results
 
     def download_docs(self, project_id: str, output_dir: str | Path) -> list[Path]:
         """
