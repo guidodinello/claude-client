@@ -19,6 +19,7 @@ from .models import (
     Page,
     ProjectDict,
     ProjectExport,
+    ProjectSyncResult,
 )
 from .render import (
     conversation_filename,
@@ -71,7 +72,7 @@ class ClaudeClient:
         self._cookie = f"sessionKey={session_token}"
         self.__dict__.pop("org_id", None)
 
-    def _scoped_client(self, org_id: str) -> "ClaudeClient":
+    def scoped_client(self, org_id: str) -> "ClaudeClient":
         """A client sharing this account's token but pinned to a specific org."""
         return ClaudeClient(self._session_token, org_id=org_id)
 
@@ -491,13 +492,15 @@ class ClaudeClient:
         out.write_text(render_project(export), encoding="utf-8")
         return out
 
-    def export_project_to_dir(self, project_id: str, output_dir: str | Path) -> Path:
+    def export_project_to_dir(self, project_id: str, output_dir: str | Path) -> ProjectSyncResult:
         """
-        Export a project to a directory.
+        Sync a project to a directory, incrementally.
 
-        Writes project.md (name, description, instructions, memory, controls),
-        docs/ (one file per knowledge doc), and conversations/ (one file per conversation).
-        Returns the output directory path.
+        Writes project.md (name, description, instructions, memory, controls) every run, and
+        syncs docs/ and conversations/ via sync_from_web / sync_conversations_from_web — files
+        whose content hasn't changed on the web side are left untouched. Returns the output
+        directory path plus a per-file "created"/"updated"/"unchanged" status for docs and
+        conversations.
         """
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -514,10 +517,10 @@ class ClaudeClient:
         )
         (out / "project.md").write_text(render_project_metadata(meta), encoding="utf-8")
 
-        self.download_docs(project_id, out / "docs")
-        self.export_conversations_to_files(project_id, out / "conversations")
+        docs_results = self.sync_from_web(project_id, out / "docs")
+        conversations_results = self.sync_conversations_from_web(project_id, out / "conversations")
 
-        return out
+        return ProjectSyncResult(path=out, docs=docs_results, conversations=conversations_results)
 
     def export_all_projects_to_dir(self, out_dir: str | Path) -> dict[str, bool]:
         """
@@ -534,7 +537,7 @@ class ClaudeClient:
         scoped_clients: dict[str, ClaudeClient] = {}
         results: dict[str, bool] = {}
         for org_id, project in projects:
-            client = scoped_clients.setdefault(org_id, self._scoped_client(org_id))
+            client = scoped_clients.setdefault(org_id, self.scoped_client(org_id))
             name = project.get("name", project["uuid"])
             try:
                 client.export_project_to_dir(project["uuid"], out_root / slugify(name))
@@ -583,7 +586,8 @@ class ClaudeClient:
             try:
                 doc = self.get_doc(project_id, meta["uuid"])
             except Exception:
-                doc = meta
+                logger.warning("Failed to fetch doc %s, skipping", meta.get("uuid", "unknown"))
+                continue
             name = _ensure_md(doc.get("file_name", doc["uuid"]))
             content = doc.get("content", "")
             dest = out / name

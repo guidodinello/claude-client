@@ -2,7 +2,11 @@
 
 Advisor-reviewed pass over the command groups in `claude_client/cli.py` (2026-07-20), looking for
 semantic grouping issues and naming incoherences. Findings below, ranked by how much they'd actually
-mislead a user. Nothing here has been acted on yet — this is a punch list for later.
+mislead a user.
+
+**Status (2026-07-26):** Findings #1 and #2 are fixed (see corrected diagnosis under #2 below).
+Finding #3 (`project`/`projects`) is being absorbed into a broader API redesign — see
+`todos.md` — rather than fixed standalone.
 
 ## The yardstick
 
@@ -13,7 +17,15 @@ created/updated/unchanged per file).
 
 ## Findings
 
-### 1. `project sync` doesn't have sync semantics
+### 1. `project sync` doesn't have sync semantics — FIXED
+
+`export_project_to_dir` now delegates to `sync_from_web` / `sync_conversations_from_web` instead
+of the always-overwrite `download_docs` / `export_conversations_to_files`, and returns a
+`ProjectSyncResult` with per-file `docs`/`conversations` status dicts that `project sync` prints,
+matching `docs sync` / `conversations sync`.
+
+<details>
+<summary>Original finding</summary>
 
 `docs sync` → `sync_from_web` and `conversations sync` → `sync_conversations_from_web` both skip
 unchanged files. `project sync` → `export_project_to_dir`, which always rewrites everything — no
@@ -27,7 +39,26 @@ porting the skip-unchanged behavior.
 behavior), or rename the CLI command back to something like `project export-dir` / `project download`
 (cosmetic, no behavior change, just stops overpromising).
 
-### 2. `projects list` and `account export` operate at different scopes
+</details>
+
+### 2. `projects list` and `account export` operate at different scopes — FIXED (diagnosis corrected)
+
+**The original diagnosis undersold this.** It isn't a listing-scope mismatch fixable by adding
+`account list` — every project-scoped CLI command (`docs *`, `conversations *`, `project
+export`/`sync`) built its client with `ClaudeClient(token)`, which defaults `org_id` to the first
+chat-capable org (`org_id` `cached_property`, picks `chat_capable_org_ids()[0]`). For a project
+living in a different org, those commands hit the wrong org and 404 — regardless of how the user
+got the project id. Adding `account list` would have made this worse: it'd surface ids the other
+commands then couldn't act on.
+
+**Fix implemented:** `cli._client()` now takes an optional `project_id`. When given one and the
+account has more than one chat-capable org, it resolves the owning org via `find_project_org`
+(already existed, previously only used by `project migrate`) and returns a client pinned to it via
+the now-public `ClaudeClient.scoped_client()`. Single-org accounts pay no extra cost — the
+ambiguity doesn't exist for them.
+
+<details>
+<summary>Original finding</summary>
 
 `projects list` → `list_projects()` shows projects in **one** org (`self.org_id`, the first
 chat-capable one on the account). `account export` → `list_all_projects()` spans **every**
@@ -40,7 +71,9 @@ multiple orgs, this is a real trap for anyone with a multi-org account, not a hy
 **Fix:** add an `account list` action (or an `--all-orgs` flag on `projects list`) so the list scope
 matches the export scope.
 
-### 3. `project` vs `projects` — near-duplicate top-level groups
+</details>
+
+### 3. `project` vs `projects` — near-duplicate top-level groups — PENDING (folded into API redesign)
 
 Two top-level command groups one character apart. Also breaks the yardstick pattern: `docs` and
 `conversations` each bundle collection-ops (`list`) and item-ops under one plural noun, but projects

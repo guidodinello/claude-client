@@ -16,11 +16,24 @@ from .render import conversation_to_markdown
 _PROJECT_URL_RE = re.compile(r"([0-9a-f-]{36})/?$", re.IGNORECASE)
 
 
-def _client(args: argparse.Namespace) -> ClaudeClient:
+def _client(args: argparse.Namespace, project_id: str | None = None) -> ClaudeClient:
+    """
+    Build a client for this command.
+
+    `org_id` defaults to the first chat-capable org on the account, which isn't
+    necessarily the org that owns `project_id` on a multi-org account. When a
+    project id is given and the account has more than one chat-capable org, resolve
+    and pin the owning org so project-scoped requests don't 404 against the wrong
+    org. Single-org accounts skip the extra lookup — there's no ambiguity to resolve.
+    """
     token = getattr(args, "token", None) or os.getenv("CLAUDE_SESSION_TOKEN")
     if not token:
         sys.exit("Error: CLAUDE_SESSION_TOKEN not set. Pass --token or export the env var.")
-    return ClaudeClient(token)
+    client = ClaudeClient(token)
+    if project_id is None or len(client.chat_capable_org_ids()) <= 1:
+        return client
+    org_id = client.find_project_org(project_id)
+    return client.scoped_client(org_id)
 
 
 def _parse_project_id(value: str) -> str:
@@ -48,7 +61,7 @@ def _projects_list(args: argparse.Namespace) -> None:
 
 
 def _docs_list(args: argparse.Namespace) -> None:
-    client = _client(args)
+    client = _client(args, args.project_id)
     docs = client.list_docs(args.project_id)
     if not docs:
         print("No docs found.")
@@ -58,13 +71,13 @@ def _docs_list(args: argparse.Namespace) -> None:
 
 
 def _docs_get(args: argparse.Namespace) -> None:
-    client = _client(args)
+    client = _client(args, args.project_id)
     doc = client.get_doc(args.project_id, args.doc_id)
     print(doc.get("content", ""))
 
 
 def _docs_upload(args: argparse.Namespace) -> None:
-    client = _client(args)
+    client = _client(args, args.project_id)
     path = Path(args.file)
     name = args.name or path.name
     try:
@@ -75,7 +88,7 @@ def _docs_upload(args: argparse.Namespace) -> None:
 
 
 def _docs_download(args: argparse.Namespace) -> None:
-    client = _client(args)
+    client = _client(args, args.project_id)
     written = client.download_docs(args.project_id, args.output_dir)
     for p in written:
         print(f"  {p}")
@@ -83,7 +96,7 @@ def _docs_download(args: argparse.Namespace) -> None:
 
 
 def _docs_sync(args: argparse.Namespace) -> None:
-    client = _client(args)
+    client = _client(args, args.project_id)
     results = client.sync_from_web(args.project_id, args.local_dir)
     for name, status in results.items():
         print(f"  [{status}] {name}")
@@ -94,15 +107,19 @@ def _docs_sync(args: argparse.Namespace) -> None:
 
 
 def _project_export(args: argparse.Namespace) -> None:
-    client = _client(args)
+    client = _client(args, args.project_id)
     out = client.export_project_to_file(args.project_id, args.output_file)
     print(f"Exported to {out}")
 
 
 def _project_sync(args: argparse.Namespace) -> None:
-    client = _client(args)
-    out = client.export_project_to_dir(args.project_id, args.output_dir)
-    print(f"Synced to {out}/")
+    client = _client(args, args.project_id)
+    result = client.export_project_to_dir(args.project_id, args.output_dir)
+    for name, status in result.docs.items():
+        print(f"  [docs/{status}] {name}")
+    for name, status in result.conversations.items():
+        print(f"  [conversations/{status}] {name}")
+    print(f"Synced to {result.path}/")
 
 
 def _project_migrate(args: argparse.Namespace) -> None:
@@ -151,7 +168,7 @@ def _account_export(args: argparse.Namespace) -> None:
 
 
 def _conversations_list(args: argparse.Namespace) -> None:
-    client = _client(args)
+    client = _client(args, args.project_id)
     convs = client.list_all_conversations(args.project_id)
     if not convs:
         print("No conversations found.")
@@ -161,14 +178,14 @@ def _conversations_list(args: argparse.Namespace) -> None:
 
 
 def _conversations_get(args: argparse.Namespace) -> None:
-    client = _client(args)
+    client = _client(args, args.project_id)
     conv = client.get_conversation(args.project_id, args.conversation_id)
     content = conversation_to_markdown(conv)
     print(content)
 
 
 def _conversations_download(args: argparse.Namespace) -> None:
-    client = _client(args)
+    client = _client(args, args.project_id)
     written = client.export_conversations_to_files(args.project_id, args.output_dir)
     for p in written:
         print(f"  {p}")
@@ -176,7 +193,7 @@ def _conversations_download(args: argparse.Namespace) -> None:
 
 
 def _conversations_sync(args: argparse.Namespace) -> None:
-    client = _client(args)
+    client = _client(args, args.project_id)
     results = client.sync_conversations_from_web(args.project_id, args.local_dir)
     for name, status in results.items():
         print(f"  [{status}] {name}")

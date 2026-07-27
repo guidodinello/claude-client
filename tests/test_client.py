@@ -286,6 +286,21 @@ def test_sync_from_web_updated(mock_req, client, tmp_path):
     assert (tmp_path / "notes.md").read_text() == "hello world"
 
 
+@patch("claude_client.client.requests")
+def test_sync_from_web_skips_doc_on_fetch_failure(mock_req, client, tmp_path):
+    """A failed get_doc must be skipped, not written as empty content."""
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([DOC_META]),
+        Exception("boom"),  # get_doc fails
+    ]
+
+    results = client.sync_from_web(PROJECT_ID, tmp_path)
+
+    assert results == {}
+    assert not (tmp_path / "notes.md").exists()
+
+
 CONV_UUID = "conv-uuid"
 CONVERSATION_META = [
     {
@@ -495,8 +510,9 @@ def test_export_project_to_dir(mock_req, client, tmp_path):
         _mock_response(CONVERSATION_DETAIL),  # get_conversation
     ]
 
-    out = client.export_project_to_dir(PROJECT_ID, tmp_path / "export")
+    result = client.export_project_to_dir(PROJECT_ID, tmp_path / "export")
 
+    out = result.path
     assert out == tmp_path / "export"
     assert (out / "project.md").exists()
     assert (out / "docs" / "notes.md").exists()
@@ -509,6 +525,38 @@ def test_export_project_to_dir(mock_req, client, tmp_path):
     assert "Auto-memory content" in project_md
 
     assert (out / "docs" / "notes.md").read_text() == "hello world"
+    assert result.docs == {"notes.md": "created"}
+    assert result.conversations == {"test-chat-conv-uui.md": "created"}
+
+
+@patch("claude_client.client.requests")
+def test_export_project_to_dir_is_incremental(mock_req, client, tmp_path):
+    """A second sync into the same directory reports unchanged files, not rewrites."""
+    responses = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(PROJECT_RESPONSE),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([DOC_META]),
+        _mock_response(DOC_FULL),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+    mock_req.get.side_effect = responses
+    client.export_project_to_dir(PROJECT_ID, tmp_path / "export")
+
+    # Second sync: identical content on the web side.
+    mock_req.get.side_effect = [
+        _mock_response(PROJECT_RESPONSE),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([DOC_META]),
+        _mock_response(DOC_FULL),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+    result = client.export_project_to_dir(PROJECT_ID, tmp_path / "export")
+
+    assert result.docs == {"notes.md": "unchanged"}
+    assert result.conversations == {"test-chat-conv-uui.md": "unchanged"}
 
 
 @patch("claude_client.client.requests")

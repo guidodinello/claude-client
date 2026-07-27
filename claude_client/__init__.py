@@ -11,6 +11,7 @@ from .models import (
     Page,
     ProjectDict,
     ProjectExport,
+    ProjectSyncResult,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "Page",
     "ProjectDict",
     "ProjectExport",
+    "ProjectSyncResult",
 ]
