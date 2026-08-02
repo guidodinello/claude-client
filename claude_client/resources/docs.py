@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from http import HTTPStatus
 from pathlib import Path
@@ -14,8 +15,13 @@ from ..models import DocDict
 
 logger = get_logger(__name__)
 
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
 
 def _ensure_md(name: str) -> str:
+    name = name.strip()
+    name = _UNSAFE_FILENAME_CHARS.sub("-", name)
+    name = re.sub(r"-{2,}", "-", name).strip("-")
     return name if name.endswith(".md") else f"{name}.md"
 
 
