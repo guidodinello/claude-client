@@ -105,7 +105,9 @@ client.docs.rm(project_id, doc_id)
 client.docs.rm_all(project_id)
 
 # Pull docs incrementally (skips files whose content already matches); pass force=True to
-# always rewrite
+# always rewrite. Remote names are converted to safer local .md filenames, with UUID
+# suffixes for case-insensitive collisions. Renamed destinations do not remove old local
+# paths or retain a reversible remote-name mapping for later pushes.
 client.docs.pull(project_id, "./local-docs/")
 
 # Conversations
