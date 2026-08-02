@@ -208,6 +208,50 @@ def test_projects_update(mock_req, client):
 # ------------------------------------------------------------------------ docs
 
 
+@pytest.mark.parametrize(
+    ("name", "fallback", "expected"),
+    [
+        (" report ", "doc-fallback", "report.md"),
+        ("folder/notes", "doc-fallback", "folder-notes.md"),
+        ("Q3::2024", "doc-fallback", "Q3-2024.md"),
+        ("notes.md", "doc-fallback", "notes.md"),
+        ("   ", "doc-fallback", "doc-fallback.md"),
+        ("???", "doc-fallback", "doc-fallback.md"),
+    ],
+)
+def test_safe_md_filename(name, fallback, expected):
+    from claude_client.resources.docs import _safe_md_filename
+
+    assert _safe_md_filename(name, fallback) == expected
+
+
+@patch("claude_client._transport.requests")
+def test_docs_pull_disambiguates_lossy_and_case_only_collisions(mock_req, client, tmp_path):
+    docs = [
+        {"uuid": "doc-slash", "file_name": "Q3/2024", "content": "slash"},
+        {"uuid": "doc-dash", "file_name": "Q3-2024", "content": "dash"},
+        {"uuid": "doc-upper", "file_name": "README", "content": "upper"},
+        {"uuid": "doc-lower", "file_name": "readme", "content": "lower"},
+    ]
+    docs_meta = [{key: doc[key] for key in ("uuid", "file_name")} for doc in docs]
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(docs_meta),
+        *[_mock_response(doc) for doc in docs],
+    ]
+
+    results = client.docs.pull(PROJECT_ID, tmp_path)
+
+    expected = {
+        "Q3-2024-doc-slash.md": "slash",
+        "Q3-2024-doc-dash.md": "dash",
+        "README-doc-upper.md": "upper",
+        "readme-doc-lower.md": "lower",
+    }
+    assert results == {name: "created" for name in expected}
+    assert {path.name: path.read_text() for path in tmp_path.iterdir()} == expected
+
+
 @patch("claude_client._transport.requests")
 def test_docs_get(mock_req, client):
     mock_req.get.side_effect = [

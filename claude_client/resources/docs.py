@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from http import HTTPStatus
 from pathlib import Path
@@ -14,9 +15,34 @@ from ..models import DocDict
 
 logger = get_logger(__name__)
 
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
-def _ensure_md(name: str) -> str:
+
+def _safe_md_filename(name: str, fallback: str) -> str:
+    name = name.strip()
+    name = _UNSAFE_FILENAME_CHARS.sub("-", name)
+    name = re.sub(r"-{2,}", "-", name).strip("-")
+    name = name or fallback
     return name if name.endswith(".md") else f"{name}.md"
+
+
+def _resolve_doc_filenames(docs: Sequence[DocDict]) -> dict[str, str]:
+    candidates = {
+        doc["uuid"]: _safe_md_filename(doc.get("file_name") or "", doc["uuid"]) for doc in docs
+    }
+    identity_counts: dict[str, int] = {}
+    for name in candidates.values():
+        identity = name.casefold()
+        identity_counts[identity] = identity_counts.get(identity, 0) + 1
+
+    return {
+        doc_id: (
+            f"{name.removesuffix('.md')}-{doc_id}.md"
+            if identity_counts[name.casefold()] > 1
+            else name
+        )
+        for doc_id, name in candidates.items()
+    }
 
 
 class DocsResource:
@@ -109,6 +135,13 @@ class DocsResource:
         Incremental by default: a doc whose content already matches the local file is
         left untouched and reported "unchanged". Pass force=True to always rewrite
         every file regardless of content (e.g. to recover from local edits).
+
+        Remote names are converted to safer local .md filenames. Names that would
+        collide on a case-insensitive filesystem receive the document UUID as a suffix.
+        A renamed destination is reported "created"; prior local paths are not removed,
+        and the original remote name is not retained for a later push. Pass name
+        explicitly when pushing if the remote name must be preserved.
+
         Web is always the source of truth — this never writes back to claude.ai.
         Returns a dict mapping each filename to "created", "updated", or "unchanged".
         """
@@ -116,6 +149,7 @@ class DocsResource:
         out.mkdir(parents=True, exist_ok=True)
 
         docs_meta = self.list(project_id)
+        filenames = _resolve_doc_filenames(docs_meta)
         results: dict[str, str] = {}
         for meta in track(docs_meta, description="Pulling docs…"):
             try:
@@ -123,7 +157,7 @@ class DocsResource:
             except requests.exceptions.RequestException:
                 logger.warning("Failed to fetch doc %s, skipping", meta.get("uuid", "unknown"))
                 continue
-            name = _ensure_md(doc.get("file_name", doc["uuid"]))
+            name = filenames[meta["uuid"]]
             content = doc.get("content", "")
             dest = out / name
             existed = dest.exists()
