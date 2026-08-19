@@ -11,7 +11,11 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-logger = { path = "/home/guido/projects/logger" }
+# Git source, not a local path: uv sync needs to resolve this in CI (GitHub Actions
+# runners don't have sibling repos checked out), and uv.lock pins the exact resolved
+# commit regardless. Tracks logger's main branch; bump with
+# `uv lock --upgrade-package logger` when logger changes and you want the update here.
+logger = { git = "https://github.com/guidodinello/logger", branch = "main" }
 
 [project.scripts]
 claude-client = "claude_client.cli:main"
