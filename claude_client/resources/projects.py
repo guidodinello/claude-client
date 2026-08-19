@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from curl_cffi import requests
 from logger import get_logger
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from .. import _manifest
 from .._transport import BASE_URL, Transport
 from ..exceptions import NotFoundError
 from ..models import ProjectDict, ProjectExport, ProjectSyncResult
@@ -172,7 +174,12 @@ class ProjectsResource:
         return render_project(data)
 
     def pull(
-        self, project_id: str, output_dir: str | Path, *, force: bool = False
+        self,
+        project_id: str,
+        output_dir: str | Path,
+        *,
+        force: bool = False,
+        prune: bool = False,
     ) -> ProjectSyncResult:
         """
         Pull a project into a directory: project.md, docs/, conversations/.
@@ -180,7 +187,8 @@ class ProjectsResource:
         project.md (name, description, instructions, memory, controls) is rewritten
         every run — it's small and has no per-file identity to diff against. docs/ and
         conversations/ are pulled incrementally via DocsResource.pull /
-        ConversationsResource.pull; pass force=True to make those unconditional too.
+        ConversationsResource.pull; pass force=True to make those unconditional too, and
+        prune=True to delete local docs/conversations removed on the web.
         Returns the output directory path plus a per-file status for docs/conversations.
         """
         out = Path(output_dir)
@@ -198,14 +206,16 @@ class ProjectsResource:
         )
         (out / "project.md").write_text(render_project_metadata(meta), encoding="utf-8")
 
-        docs_results = self._docs.pull(project_id, out / "docs", force=force)
+        docs_results = self._docs.pull(project_id, out / "docs", force=force, prune=prune)
         conversations_results = self._conversations.pull(
-            project_id, out / "conversations", force=force
+            project_id, out / "conversations", force=force, prune=prune
         )
 
         return ProjectSyncResult(path=out, docs=docs_results, conversations=conversations_results)
 
-    def pull_all(self, out_dir: str | Path, *, force: bool = False) -> dict[str, bool]:
+    def pull_all(
+        self, out_dir: str | Path, *, force: bool = False, prune: bool = False
+    ) -> dict[str, bool]:
         """
         Pull every project across every chat-capable org on this account.
 
@@ -213,22 +223,41 @@ class ProjectsResource:
         (see `pull`). Encapsulates the multi-org scoping so callers don't need their
         own org-to-transport bookkeeping. Returns a map of project name -> success; one
         project failing is logged and skipped, never aborts the rest.
+
+        Pass prune=True to also delete per-project docs/conversations removed on the
+        web (via `pull`) and to remove local project directories for projects deleted
+        on the web. A project directory is only removed once its uuid is confirmed
+        absent from the remote project list; a project whose own pull fails is never
+        pruned, even with prune=True.
         """
         out_root = Path(out_dir)
         projects = self.list()
+        remote_ids = {project["uuid"] for _, project in projects}
 
+        previous = _manifest.load(out_root)
         scoped: dict[str, ProjectsResource] = {}
         results: dict[str, bool] = {}
+        entries: dict[str, _manifest.ManifestEntry] = {}
         for org_id, project in projects:
             resource = scoped.setdefault(org_id, self._scoped(org_id))
-            name = project.get("name", project["uuid"])
+            uuid = project["uuid"]
+            name = project.get("name", uuid)
+            slug = slugify(name)
             try:
-                resource.pull(project["uuid"], out_root / slugify(name), force=force)
+                resource.pull(uuid, out_root / slug, force=force, prune=prune)
                 results[name] = True
+                entries[uuid] = _manifest.ManifestEntry(filename=slug, updated_at="")
             except requests.exceptions.RequestException:
                 logger.warning("Failed to pull project '%s', skipping", name)
                 results[name] = False
+                if uuid in previous:
+                    entries[uuid] = previous[uuid]
 
+        if prune:
+            for slug in _manifest.prune_targets(previous, remote_ids):
+                shutil.rmtree(out_root / slug, ignore_errors=True)
+
+        _manifest.save(out_root, entries)
         return results
 
     def _scoped(self, org_id: str) -> ProjectsResource:

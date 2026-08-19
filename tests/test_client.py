@@ -14,6 +14,7 @@ from claude_client import (
     NotFoundError,
     UploadError,
 )
+from claude_client._manifest import MANIFEST_NAME
 from claude_client.render import conversation_to_markdown, slugify
 
 ORG_ID = "org-uuid"
@@ -377,11 +378,9 @@ def test_docs_pull_disambiguates_lossy_and_case_only_collisions(mock_req, client
         {"uuid": "doc-upper", "file_name": "README", "content": "upper"},
         {"uuid": "doc-lower", "file_name": "readme", "content": "lower"},
     ]
-    docs_meta = [{key: doc[key] for key in ("uuid", "file_name")} for doc in docs]
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
-        _mock_response(docs_meta),
-        *[_mock_response(doc) for doc in docs],
+        _mock_response(docs),
     ]
 
     results = client.docs.pull(PROJECT_ID, tmp_path)
@@ -393,7 +392,9 @@ def test_docs_pull_disambiguates_lossy_and_case_only_collisions(mock_req, client
         "readme-doc-lower.md": "lower",
     }
     assert results == {name: "created" for name in expected}
-    assert {path.name: path.read_text() for path in tmp_path.iterdir()} == expected
+    assert {
+        path.name: path.read_text() for path in tmp_path.iterdir() if path.name != MANIFEST_NAME
+    } == expected
 
 
 @patch("claude_client._transport.requests")
@@ -526,16 +527,17 @@ def test_docs_push_content_failure_with_existing_doc_leaves_original(mock_req, c
 
 @patch("claude_client._transport.requests")
 def test_docs_pull_created(mock_req, client, tmp_path):
+    """docs.list() already returns full content — pull must not call get() per doc."""
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
-        _mock_response([DOC_META]),
-        _mock_response(DOC_FULL),
+        _mock_response([DOC_FULL]),
     ]
 
     results = client.docs.pull(PROJECT_ID, tmp_path)
 
     assert results["notes.md"] == "created"
     assert (tmp_path / "notes.md").read_text() == "hello world"
+    assert mock_req.get.call_count == 2
 
 
 @patch("claude_client._transport.requests")
@@ -544,8 +546,7 @@ def test_docs_pull_unchanged(mock_req, client, tmp_path):
 
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
-        _mock_response([DOC_META]),
-        _mock_response(DOC_FULL),
+        _mock_response([DOC_FULL]),
     ]
 
     results = client.docs.pull(PROJECT_ID, tmp_path)
@@ -559,8 +560,7 @@ def test_docs_pull_updated(mock_req, client, tmp_path):
 
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
-        _mock_response([DOC_META]),
-        _mock_response(DOC_FULL),
+        _mock_response([DOC_FULL]),
     ]
 
     results = client.docs.pull(PROJECT_ID, tmp_path)
@@ -575,8 +575,7 @@ def test_docs_pull_force_rewrites_unchanged_file(mock_req, client, tmp_path):
 
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
-        _mock_response([DOC_META]),
-        _mock_response(DOC_FULL),
+        _mock_response([DOC_FULL]),
     ]
 
     results = client.docs.pull(PROJECT_ID, tmp_path, force=True)
@@ -585,18 +584,47 @@ def test_docs_pull_force_rewrites_unchanged_file(mock_req, client, tmp_path):
 
 
 @patch("claude_client._transport.requests")
-def test_docs_pull_skips_doc_on_fetch_failure(mock_req, client, tmp_path):
-    """A failed get() must be skipped, not written as empty content."""
+def test_docs_pull_raises_on_list_failure(mock_req, client, tmp_path):
+    """There is no per-doc fetch left to skip past — a failed list() call must
+    propagate, same as ConversationsResource.pull."""
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
-        _mock_response([DOC_META]),
-        RequestException("boom"),  # get_doc fails
+        RequestException("boom"),
     ]
 
+    with pytest.raises(RequestException):
+        client.docs.pull(PROJECT_ID, tmp_path)
+
+
+@patch("claude_client._transport.requests")
+def test_docs_pull_prune_deletes_doc_removed_on_web(mock_req, client, tmp_path):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([DOC_FULL]),
+    ]
+    client.docs.pull(PROJECT_ID, tmp_path)
+    assert (tmp_path / "notes.md").exists()
+
+    mock_req.get.side_effect = [_mock_response([])]  # doc no longer listed
+    results = client.docs.pull(PROJECT_ID, tmp_path, prune=True)
+
+    assert results["notes.md"] == "deleted"
+    assert not (tmp_path / "notes.md").exists()
+
+
+@patch("claude_client._transport.requests")
+def test_docs_pull_without_prune_keeps_doc_removed_on_web(mock_req, client, tmp_path):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([DOC_FULL]),
+    ]
+    client.docs.pull(PROJECT_ID, tmp_path)
+
+    mock_req.get.side_effect = [_mock_response([])]
     results = client.docs.pull(PROJECT_ID, tmp_path)
 
-    assert results == {}
-    assert not (tmp_path / "notes.md").exists()
+    assert "notes.md" not in results
+    assert (tmp_path / "notes.md").exists()
 
 
 CONV_UUID = "conv-uuid"
@@ -798,6 +826,102 @@ def test_conversations_pull_updated(mock_req, client, tmp_path):
     assert results["test-chat-conv-uui.md"] == "updated"
 
 
+@patch("claude_client._transport.requests")
+def test_conversations_pull_skips_fetch_when_manifest_matches(mock_req, client, tmp_path):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    mock_req.get.reset_mock()
+    mock_req.get.side_effect = [_mock_response(CONV_PAGE_RESPONSE)]  # no per-conversation GET
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert results["test-chat-conv-uui.md"] == "unchanged"
+    assert mock_req.get.call_count == 1
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_refetches_when_local_file_deleted(mock_req, client, tmp_path):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+    client.conversations.pull(PROJECT_ID, tmp_path)
+    (tmp_path / "test-chat-conv-uui.md").unlink()
+
+    mock_req.get.side_effect = [
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert results["test-chat-conv-uui.md"] == "created"
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_force_refetches_despite_manifest_hit(mock_req, client, tmp_path):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    mock_req.get.side_effect = [
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+    results = client.conversations.pull(PROJECT_ID, tmp_path, force=True)
+
+    assert results["test-chat-conv-uui.md"] == "updated"
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_prune_deletes_conversation_removed_on_web(mock_req, client, tmp_path):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    empty_conv_page = {
+        "data": [],
+        "pagination": {"total": 0, "limit": 30, "offset": 0, "has_more": False},
+    }
+    mock_req.get.side_effect = [_mock_response(empty_conv_page)]
+    results = client.conversations.pull(PROJECT_ID, tmp_path, prune=True)
+
+    assert results["test-chat-conv-uui.md"] == "deleted"
+    assert not (tmp_path / "test-chat-conv-uui.md").exists()
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_fetch_failure_is_not_pruned_next_run(mock_req, client, tmp_path):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    mock_req.get.side_effect = [_mock_response(CONV_PAGE_RESPONSE), RequestException("boom")]
+    client.conversations.pull(PROJECT_ID, tmp_path, force=True)
+
+    empty_conv_page = {
+        "data": [],
+        "pagination": {"total": 0, "limit": 30, "offset": 0, "has_more": False},
+    }
+    mock_req.get.side_effect = [_mock_response(empty_conv_page)]
+    results = client.conversations.pull(PROJECT_ID, tmp_path, prune=True)
+
+    assert results["test-chat-conv-uui.md"] == "deleted"
+
+
 # --------------------------------------------------------------------- projects
 # (composite: pull / pull_all, which pull docs + conversations + memory together)
 
@@ -808,8 +932,7 @@ def test_projects_pull(mock_req, client, tmp_path):
         _mock_response(ORGS_RESPONSE),  # org_id
         _mock_response(PROJECT_RESPONSE),  # get_project
         _mock_response(MEMORY_RESPONSE),  # get_memory
-        _mock_response([DOC_META]),  # list_docs
-        _mock_response(DOC_FULL),  # get_doc
+        _mock_response([DOC_FULL]),  # list_docs (content included)
         _mock_response(CONV_PAGE_RESPONSE),  # list_conversations
         _mock_response(CONVERSATION_DETAIL),  # get_conversation
     ]
@@ -840,8 +963,7 @@ def test_projects_pull_is_incremental(mock_req, client, tmp_path):
         _mock_response(ORGS_RESPONSE),
         _mock_response(PROJECT_RESPONSE),
         _mock_response(MEMORY_RESPONSE),
-        _mock_response([DOC_META]),
-        _mock_response(DOC_FULL),
+        _mock_response([DOC_FULL]),
         _mock_response(CONV_PAGE_RESPONSE),
         _mock_response(CONVERSATION_DETAIL),
     ]
@@ -852,10 +974,8 @@ def test_projects_pull_is_incremental(mock_req, client, tmp_path):
     mock_req.get.side_effect = [
         _mock_response(PROJECT_RESPONSE),
         _mock_response(MEMORY_RESPONSE),
-        _mock_response([DOC_META]),
-        _mock_response(DOC_FULL),
+        _mock_response([DOC_FULL]),
         _mock_response(CONV_PAGE_RESPONSE),
-        _mock_response(CONVERSATION_DETAIL),
     ]
     result = client.projects.pull(PROJECT_ID, tmp_path / "export")
 
@@ -914,6 +1034,78 @@ def test_projects_pull_all_one_failure_does_not_abort_others(mock_req, client, t
     # pull() creates the output dir before its first API call, so project-a's dir may
     # exist, but it must be empty — the failure happened before anything was written.
     assert not (tmp_path / "project-a" / "project.md").exists()
+
+
+@patch("claude_client._transport.requests")
+def test_projects_pull_all_prune_removes_deleted_project_dir(mock_req, client, tmp_path):
+    project_a = {"uuid": "proj-a", "name": "Project A", "description": "", "prompt_template": ""}
+    project_b = {"uuid": "proj-b", "name": "Project B", "description": "", "prompt_template": ""}
+    empty_conv_page = {"data": [], "pagination": {"has_more": False}}
+
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([project_a, project_b]),
+        _mock_response(project_a),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+        _mock_response(project_b),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+    ]
+    client.projects.pull_all(tmp_path)
+    assert (tmp_path / "project-a").exists()
+    assert (tmp_path / "project-b").exists()
+
+    # Project A no longer exists on the web.
+    mock_req.get.side_effect = [
+        _mock_response([project_b]),
+        _mock_response(project_b),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+    ]
+    results = client.projects.pull_all(tmp_path, prune=True)
+
+    assert results == {"Project B": True}
+    assert not (tmp_path / "project-a").exists()
+    assert (tmp_path / "project-b").exists()
+
+
+@patch("claude_client._transport.requests")
+def test_projects_pull_all_does_not_prune_dir_of_failed_project(mock_req, client, tmp_path):
+    project_a = {"uuid": "proj-a", "name": "Project A", "description": "", "prompt_template": ""}
+    project_b = {"uuid": "proj-b", "name": "Project B", "description": "", "prompt_template": ""}
+    empty_conv_page = {"data": [], "pagination": {"has_more": False}}
+
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([project_a, project_b]),
+        _mock_response(project_a),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+        _mock_response(project_b),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+    ]
+    client.projects.pull_all(tmp_path)
+
+    # Both projects still listed remotely, but Project A's own pull fails this run.
+    mock_req.get.side_effect = [
+        _mock_response([project_a, project_b]),
+        RequestException("boom"),
+        _mock_response(project_b),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+    ]
+    results = client.projects.pull_all(tmp_path, prune=True)
+
+    assert results == {"Project A": False, "Project B": True}
+    assert (tmp_path / "project-a").exists()  # never pruned despite prune=True
 
 
 # ------------------------------------------------------------------------ CLI

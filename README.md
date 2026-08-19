@@ -10,7 +10,7 @@ Python client for the Claude.ai web API — manage projects, sync files, and exp
 - List, get, push (upsert), remove, and pull knowledge docs
 - List, get, and pull conversations as Markdown files
 - Export a full project to a single Markdown file (title, description, instructions, memory, docs, conversations)
-- Pull a full project to a local directory (project.md, docs/, conversations/) — incremental by default, `--force` to always rewrite
+- Pull a full project to a local directory (project.md, docs/, conversations/) — incremental by default, `--force` to always rewrite, `--prune` to delete local files/dirs removed on the web
 - Migrate a project's docs, conversations, and memory to another project — even across accounts/orgs
 - Resource-namespaced Python client (`client.projects`, `client.docs`, `client.conversations`, `client.memory`, `client.orgs`) and matching CLI
 
@@ -41,7 +41,11 @@ Or pass it directly via `--token` (CLI) or the `session_token` argument (Python)
 ## CLI usage
 
 Every group follows the same verb set: `list` / `get` (or `show`) and `pull` — one incremental
-verb per resource, always skipping unchanged files unless you pass `--force`.
+verb per resource, always skipping unchanged files unless you pass `--force`. A sidecar
+manifest (`.claude-pull-manifest.json`) tracks what was pulled, keyed by remote uuid; pass
+`--prune` to also delete local files/directories whose remote item no longer exists (off by
+default, so ad-hoc pulls never delete anything). Conversations skip the network fetch entirely
+when the manifest shows nothing changed; docs always re-fetch content but still support pruning.
 
 ```bash
 # List projects across every chat-capable org on the account
@@ -55,7 +59,7 @@ claude-client docs list <project-id>
 claude-client docs get <project-id> <doc-id>
 claude-client docs push <project-id> path/to/file.md      # upserts by name
 claude-client docs rm <project-id> <doc-id>
-claude-client docs pull <project-id> ./local-docs/         # incremental; add --force to always rewrite
+claude-client docs pull <project-id> ./local-docs/         # incremental; --force to always rewrite, --prune to delete removed docs
 
 # Export full project to a single markdown file
 claude-client project export <project-id> export.md
@@ -63,6 +67,7 @@ claude-client project export <project-id> export.md
 # Pull a project to a directory (project.md, docs/, conversations/), incrementally
 claude-client project pull <project-id> ./my-project/
 claude-client project pull <project-id> ./my-project/ --force
+claude-client project pull <project-id> ./my-project/ --prune  # also delete removed docs/conversations
 
 # Migrate a project's docs, conversations, and memory to another project
 # (source/dest accept a bare project id or a full claude.ai project URL;
@@ -104,21 +109,27 @@ client.docs.push_many(project_id, ["a.md", "b.md"], name_prefix="MyProject__")
 client.docs.rm(project_id, doc_id)
 client.docs.rm_all(project_id)
 
-# Pull docs incrementally (skips files whose content already matches); pass force=True to
-# always rewrite. Remote names are converted to safer local .md filenames, with UUID
-# suffixes for case-insensitive collisions. Renamed destinations do not remove old local
-# paths or retain a reversible remote-name mapping for later pushes.
+# Pull docs incrementally (skips rewriting files whose content already matches); pass
+# force=True to always rewrite, prune=True to delete local docs removed on the web
+# (also cleans up stale files left behind by a rename). Remote names are converted to
+# safer local .md filenames, with UUID suffixes for case-insensitive collisions. The
+# original remote name is not retained for a later push.
 client.docs.pull(project_id, "./local-docs/")
 
 # Conversations
 convs = client.conversations.list(project_id)
 conv = client.conversations.get(conversation_id)
+# Incremental over the network too: a conversation whose remote updated_at matches the
+# pull manifest is never re-fetched. force=True bypasses that; prune=True deletes local
+# files for conversations removed on the web.
 client.conversations.pull(project_id, "./local-convos/")
 
 # Project composite operations
 markdown = client.projects.export(project_id)  # single markdown string
 client.projects.pull(project_id, "./my-project/")  # project.md, docs/, conversations/
+client.projects.pull(project_id, "./my-project/", prune=True)
 client.projects.pull_all("./all-projects/")  # every project, every org
+client.projects.pull_all("./all-projects/", prune=True)  # also remove deleted projects' dirs
 
 # Migrate a project's docs/conversations/memory to another project, possibly
 # across accounts and orgs (two separate clients, one per account)

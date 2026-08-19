@@ -23,6 +23,8 @@ class DocDict(TypedDict):
     file_name: str
     content: str
     created_at: str
+    project_uuid: str
+    estimated_token_count: int
 
 
 class MemoryDict(TypedDict):
