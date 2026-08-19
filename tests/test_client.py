@@ -670,8 +670,9 @@ def test_docs_pull_prune_does_not_delete_name_reused_by_a_new_doc(mock_req, clie
 
 @patch("claude_client._transport.requests")
 def test_docs_pull_skips_doc_missing_content_key(mock_req, client, tmp_path):
-    """If the list response ever omits `content` (API change), pull must not write
-    an empty file and silently call it 'unchanged' forever."""
+    """If the list response ever omits `content` (API change) and there's no local
+    file to fall back on, pull must not write an empty file — it must surface the gap
+    rather than silently doing nothing."""
     no_content_doc = {"uuid": DOC_UUID, "file_name": "notes.md"}
     mock_req.get.side_effect = [
         _mock_response(ORGS_RESPONSE),
@@ -680,8 +681,27 @@ def test_docs_pull_skips_doc_missing_content_key(mock_req, client, tmp_path):
 
     results = client.docs.pull(PROJECT_ID, tmp_path)
 
-    assert results == {}
+    assert results == {"notes.md": "content_missing"}
     assert not (tmp_path / "notes.md").exists()
+
+
+@patch("claude_client._transport.requests")
+def test_docs_pull_missing_content_key_leaves_existing_local_file_untouched(
+    mock_req, client, tmp_path
+):
+    """If content is missing but a prior successful pull already wrote the file, the
+    existing local copy must be left alone rather than deleted or blanked."""
+    (tmp_path / "notes.md").write_text("hello world")
+    no_content_doc = {"uuid": DOC_UUID, "file_name": "notes.md"}
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([no_content_doc]),
+    ]
+
+    results = client.docs.pull(PROJECT_ID, tmp_path)
+
+    assert "notes.md" not in results  # not reported as missing — the file is right there
+    assert (tmp_path / "notes.md").read_text() == "hello world"
 
 
 CONV_UUID = "conv-uuid"
@@ -1190,9 +1210,41 @@ def test_projects_pull_all_tracks_project_on_first_ever_pull_failure(mock_req, c
 
 
 @patch("claude_client._transport.requests")
-def test_projects_pull_all_slug_collision_does_not_delete_live_project(mock_req, client, tmp_path):
-    """Two distinct projects (different orgs) can slugify to the same directory name.
-    Deleting one must never rmtree the other's still-live mirror."""
+def test_projects_pull_all_disambiguates_slug_collision(mock_req, client, tmp_path):
+    """Two distinct projects (different orgs) with the same name must not write into
+    the same directory — that would silently mix their docs/conversations together."""
+    other_org = {"uuid": "other-org", "capabilities": ["chat"], "name": "Other Org"}
+    project_a = {"uuid": "proj-a", "name": "Project X", "description": "A", "prompt_template": ""}
+    project_b = {"uuid": "proj-b", "name": "Project X", "description": "B", "prompt_template": ""}
+    empty_conv_page = {"data": [], "pagination": {"has_more": False}}
+
+    mock_req.get.side_effect = [
+        _mock_response([*ORGS_RESPONSE, other_org]),
+        _mock_response([project_a]),
+        _mock_response([project_b]),
+        _mock_response(project_a),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+        _mock_response(project_b),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+    ]
+    client.projects.pull_all(tmp_path)
+
+    assert not (tmp_path / "project-x").exists()  # bare slug never written — ambiguous
+    dir_a = tmp_path / "project-x-proj-a"
+    dir_b = tmp_path / "project-x-proj-b"
+    assert dir_a.exists() and dir_b.exists()
+    assert "A" in (dir_a / "project.md").read_text()
+    assert "B" in (dir_b / "project.md").read_text()
+
+
+@patch("claude_client._transport.requests")
+def test_projects_pull_all_prune_does_not_delete_live_project_sharing_a_slug(
+    mock_req, client, tmp_path
+):
     other_org = {"uuid": "other-org", "capabilities": ["chat"], "name": "Other Org"}
     project_a = {"uuid": "proj-a", "name": "Project X", "description": "", "prompt_template": ""}
     project_b = {"uuid": "proj-b", "name": "Project X", "description": "", "prompt_template": ""}
@@ -1212,9 +1264,8 @@ def test_projects_pull_all_slug_collision_does_not_delete_live_project(mock_req,
         _mock_response(empty_conv_page),
     ]
     client.projects.pull_all(tmp_path)
-    assert (tmp_path / "project-x").exists()
 
-    # proj-a deleted on the web; proj-b (same slug, different org) still live.
+    # proj-a deleted on the web; proj-b (same name, different org) still live.
     # (chat_capable_org_ids() is cached on the transport, so no re-fetch of orgs here.)
     mock_req.get.side_effect = [
         _mock_response([]),  # org 1: proj-a no longer listed
@@ -1226,7 +1277,8 @@ def test_projects_pull_all_slug_collision_does_not_delete_live_project(mock_req,
     ]
     client.projects.pull_all(tmp_path, prune=True)
 
-    assert (tmp_path / "project-x").exists()  # proj-b's mirror must survive
+    assert not (tmp_path / "project-x-proj-a").exists()
+    assert (tmp_path / "project-x-proj-b").exists()
 
 
 # ------------------------------------------------------------------------ CLI

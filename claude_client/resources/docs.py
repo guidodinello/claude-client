@@ -154,7 +154,9 @@ class DocsResource:
         for a later push — pass name explicitly when pushing if it must be preserved.
 
         Web is always the source of truth — this never writes back to claude.ai.
-        Returns a dict mapping each filename to "created", "updated", "unchanged", or "deleted".
+        Returns a dict mapping each filename to "created", "updated", "unchanged",
+        "deleted", or "content_missing" (the doc's local file couldn't be verified or
+        refreshed because the list response omitted its content).
         """
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -164,15 +166,21 @@ class DocsResource:
         filenames = _resolve_doc_filenames(docs_meta)
 
         results: dict[str, str] = {}
+        # uuids confirmed present this run — used to detect deletions/renames. Kept
+        # separate from what gets saved: a uuid absent from the remote list entirely
+        # must NOT lose its manifest entry just because a non-prune run doesn't touch
+        # it, or a later --prune run would have nothing left to prune it with.
         entries: dict[str, _manifest.ManifestEntry] = {}
         for doc in track(docs_meta, description="Pulling docs…"):
             uuid = doc["uuid"]
+            name = filenames[uuid]
             if "content" not in doc:
                 logger.warning("Doc %s has no content in list response, skipping", uuid)
                 if uuid in previous:
                     entries[uuid] = previous[uuid]
+                if not (out / name).exists():
+                    results[name] = "content_missing"
                 continue
-            name = filenames[uuid]
             content = doc["content"]
             dest = out / name
             existed = dest.exists()
@@ -183,10 +191,12 @@ class DocsResource:
                 results[name] = "updated" if existed else "created"
             entries[uuid] = _manifest.ManifestEntry(filename=name, updated_at="")
 
+        to_save = {**previous, **entries}
         if prune:
-            for filename in _manifest.prune_targets(previous, entries):
+            for uuid, filename in _manifest.prune_targets(previous, entries):
                 (out / filename).unlink(missing_ok=True)
                 results[filename] = "deleted"
+                to_save.pop(uuid, None)
 
-        _manifest.save(out, entries)
+        _manifest.save(out, to_save)
         return results

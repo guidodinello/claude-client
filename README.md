@@ -45,7 +45,9 @@ verb per resource, always skipping unchanged files unless you pass `--force`. A 
 manifest (`.claude-pull-manifest.json`) tracks what was pulled, keyed by remote uuid; pass
 `--prune` to also delete local files/directories whose remote item no longer exists (off by
 default, so ad-hoc pulls never delete anything). Conversations skip the network fetch entirely
-when the manifest shows nothing changed; docs always re-fetch content but still support pruning.
+when the manifest shows nothing changed; docs get their content for free from the same list
+call that finds them (no separate per-doc fetch), so they're incremental by content match with
+no extra round-trip, and still support pruning.
 
 ```bash
 # List projects across every chat-capable org on the account

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 class OrgDict(TypedDict):
@@ -19,12 +19,18 @@ class ProjectDict(TypedDict):
 
 
 class DocDict(TypedDict):
+    """
+    project_uuid and estimated_token_count are present on list()/get() responses (the
+    docs list endpoint, verified live) but NotRequired because the create POST response
+    (`DocsResource._create`) likely omits these server-computed fields.
+    """
+
     uuid: str
     file_name: str
     content: str
     created_at: str
-    project_uuid: str
-    estimated_token_count: int
+    project_uuid: NotRequired[str]
+    estimated_token_count: NotRequired[int]
 
 
 class MemoryDict(TypedDict):

@@ -83,14 +83,20 @@ class ConversationsResource:
         conv_metas = self.list(project_id)
 
         results: dict[str, str] = {}
+        # uuids confirmed present this run — see docs.py::pull for why this is kept
+        # separate from what gets saved (stale, remote-absent entries must survive a
+        # non-prune run so a later --prune can still find them).
         entries: dict[str, _manifest.ManifestEntry] = {}
         for conv_meta in track(conv_metas, description="Pulling conversations…"):
             uuid = conv_meta["uuid"]
             prior = previous.get(uuid)
+            remote_updated_at = conv_meta.get("updated_at", "")
             if (
                 not force
                 and prior is not None
-                and prior.updated_at == conv_meta.get("updated_at", "")
+                and prior.updated_at
+                and remote_updated_at
+                and prior.updated_at == remote_updated_at
                 and (out / prior.filename).exists()
             ):
                 results[prior.filename] = "unchanged"
@@ -114,14 +120,14 @@ class ConversationsResource:
             else:
                 dest.write_text(content, encoding="utf-8")
                 results[filename] = "updated" if existed else "created"
-            entries[uuid] = _manifest.ManifestEntry(
-                filename=filename, updated_at=conv_meta.get("updated_at", "")
-            )
+            entries[uuid] = _manifest.ManifestEntry(filename=filename, updated_at=remote_updated_at)
 
+        to_save = {**previous, **entries}
         if prune:
-            for filename in _manifest.prune_targets(previous, entries):
+            for uuid, filename in _manifest.prune_targets(previous, entries):
                 (out / filename).unlink(missing_ok=True)
                 results[filename] = "deleted"
+                to_save.pop(uuid, None)
 
-        _manifest.save(out, entries)
+        _manifest.save(out, to_save)
         return results
