@@ -9,6 +9,6 @@
 - [ ] consolidate `pull`/`pull_all` progress bars into one progress with per-project tasks (and identify the project in the label) — see [`docs/bugs/pull-progress-bars-accumulate.md`](docs/bugs/pull-progress-bars-accumulate.md)
 - [ ] resource methods assume the wrong org on multi-org accounts for direct library callers — see [`docs/00-bugs.md`](docs/00-bugs.md)
 - [ ] `pull`/`pull_all` never prune local files deleted on the web (stale docs/conversations/project dirs accumulate) — see [`docs/bugs/pull-never-prunes-deleted-items.md`](docs/bugs/pull-never-prunes-deleted-items.md)
-- [ ] `_check_auth` reports a Cloudflare 403 challenge the same as a real invalid/expired token — see [`docs/bugs/cloudflare-403-reported-as-token-expired.md`](docs/bugs/cloudflare-403-reported-as-token-expired.md)
+- [x] `_check_auth` reports a Cloudflare 403 challenge the same as a real invalid/expired token — see [`docs/bugs/cloudflare-403-reported-as-token-expired.md`](docs/bugs/cloudflare-403-reported-as-token-expired.md)
 - [x] CLI command grouping/naming cleanup, part 1 (behavior fixes) — see [`docs/cli-consistency-review.md`](docs/cli-consistency-review.md): per-project org resolution, `project sync` now incremental, sync fetch-failure behavior aligned
 - [x] CLI command grouping/naming cleanup, part 2 (API redesign: resource sub-clients, `pull`/`push` verbs, drop `projects` group) — see [`docs/cli-consistency-review.md`](docs/cli-consistency-review.md)

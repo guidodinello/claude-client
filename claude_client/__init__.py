@@ -1,5 +1,5 @@
 from .client import ClaudeClient
-from .exceptions import AuthError, NotFoundError, UploadError
+from .exceptions import AuthError, CloudflareChallengeError, NotFoundError, UploadError
 from .migrate import migrate_project
 from .models import (
     ChatMessageDict,
@@ -17,6 +17,7 @@ from .models import (
 __all__ = [
     "ClaudeClient",
     "AuthError",
+    "CloudflareChallengeError",
     "NotFoundError",
     "UploadError",
     "migrate_project",
