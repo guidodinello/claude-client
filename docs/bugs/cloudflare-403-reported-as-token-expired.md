@@ -36,6 +36,13 @@ scoring — e.g. `curl_cffi`'s `chrome110` impersonation profile drifting out of
 date, IP reputation, or a Cloudflare policy change. They get sent on a wild goose
 chase re-issuing tokens for a problem that isn't token-shaped at all.
 
+**Root cause confirmed for this incident (2026-08-19):** the machine was on a
+VPN. Same token, same code, VPN off → `200` immediately; VPN on → `403`
+Cloudflare challenge every time. VPN exit IPs commonly carry poor Cloudflare
+reputation scores, which is enough on its own to trigger the JS challenge
+regardless of TLS/browser fingerprinting. Worth checking VPN state first the
+next time this error shows up, before re-issuing tokens.
+
 ## Fix options, best first
 
 **A. Detect the Cloudflare challenge specifically and raise a distinct error.**
