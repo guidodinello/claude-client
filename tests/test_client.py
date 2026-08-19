@@ -89,8 +89,10 @@ def test_check_auth_401_is_plain_auth_error_not_cloudflare(mock_req, client):
 
 
 @patch("claude_client._transport.requests")
-def test_check_auth_403_app_layer_json_is_plain_auth_error(mock_req, client):
-    """A 403 that parses as claude.ai's own JSON error body is a real token problem."""
+def test_check_auth_403_app_layer_json_is_hedged_auth_error(mock_req, client):
+    """A 403 that parses as claude.ai's own JSON error body may be a token problem
+    or a real permission error (e.g. wrong-org access) — the body shape alone can't
+    tell them apart, so the message must not claim expiry unconditionally."""
     mock_req.get.return_value = _mock_response(
         {"error": {"type": "permission_error"}},
         status_code=403,
@@ -99,19 +101,47 @@ def test_check_auth_403_app_layer_json_is_plain_auth_error(mock_req, client):
     with pytest.raises(AuthError) as exc_info:
         _ = client.org_id
     assert not isinstance(exc_info.value, CloudflareChallengeError)
-    assert "expired" in str(exc_info.value)
+    assert "may mean" in str(exc_info.value)
 
 
 @patch("claude_client._transport.requests")
-def test_check_auth_403_unrecognized_body_is_cloudflare_challenge(mock_req, client):
-    """A 403 that doesn't look like the app layer is treated as a Cloudflare block —
-    the safe direction to fail, since an unrecognized response should never claim
-    the token expired."""
+def test_check_auth_403_cloudflare_json_block_is_not_app_layer(mock_req, client):
+    """A Cloudflare-intervened 403 can still carry a JSON body (its WAF block
+    format) — cf-mitigated must win over a JSON-shaped body, or this is the exact
+    misdiagnosis the PR set out to fix."""
+    mock_req.get.return_value = _mock_response(
+        {"success": False},
+        status_code=403,
+        headers={"cf-mitigated": "challenge", "content-type": "application/json"},
+    )
+    with pytest.raises(CloudflareChallengeError):
+        _ = client.org_id
+
+
+@patch("claude_client._transport.requests")
+def test_check_auth_403_unrecognized_body_is_hedged_unknown_block(mock_req, client):
+    """A 403 that looks like neither the app layer nor a recognizable Cloudflare
+    challenge/block must not confidently blame Cloudflare specifically — only that
+    it isn't a token problem."""
     mock_req.get.return_value = _mock_response({}, status_code=403)
     with pytest.raises(CloudflareChallengeError) as exc_info:
         _ = client.org_id
     assert "VPN" in str(exc_info.value)
     assert "expired" not in str(exc_info.value)
+
+
+def test_is_app_layer_json_false_on_decode_error_not_crash():
+    """curl_cffi's real Response.json() does loads(self.content) on raw bytes: a
+    non-UTF-8 body raises UnicodeDecodeError, and with orjson installed (which
+    curl_cffi prefers) a decode failure raises orjson.JSONDecodeError — a
+    ValueError subclass, not json.JSONDecodeError. Either must be treated as
+    'not the app layer', not escape and crash _check_auth."""
+    from claude_client._transport import _is_app_layer_json
+
+    for exc in (UnicodeDecodeError("utf-8", b"", 0, 1, "bad"), ValueError("bad json")):
+        resp = _mock_response({}, headers={"content-type": "application/json"})
+        resp.json.side_effect = exc
+        assert _is_app_layer_json(resp) is False
 
 
 def test_is_cloudflare_challenge_recognizes_live_captured_response():

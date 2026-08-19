@@ -53,20 +53,33 @@ fixed it — confirmed by capturing a live invalid-token 403 through the real
 client (`curl_cffi`, `impersonate="chrome110"`), which came back with
 `server: cloudflare` in the headers and a normal claude.ai JSON error body.
 
-`_check_auth` (`claude_client/_transport.py`) now uses the inverse test for a
-`403`: **positively identify the app layer** (`content-type: application/json`
-+ a parseable dict body) → `AuthError`; anything else → `CloudflareChallengeError`
-(a subclass of `AuthError`, so existing `except AuthError` callers — including
-`claude-web-backup` — keep working, just with the corrected message). This
-fails in the safe direction: an unrecognized response never claims the token
-expired. A `401` is always `AuthError` unconditionally — Cloudflare doesn't
-challenge with 401. `503`/`429` use the opposite test (positively identify
-Cloudflare via `cf-mitigated` or `server: cloudflare` + a challenge-body
-marker), since those codes have legitimate non-Cloudflare causes too.
+`_check_auth` (`claude_client/_transport.py`) now checks a `403` in this order:
 
-The new message names the VPN explicitly, since that's the confirmed trigger:
-"Request was blocked by Cloudflare before reaching claude.ai — this is not a
-token problem... If you are on a VPN, try disabling it."
+1. **Cloudflare evidence first** (`cf-mitigated` header, or `server: cloudflare`
+   + a challenge-body marker) → `CloudflareChallengeError`, confident message
+   naming the VPN. Checked before the JSON-body test because Cloudflare's own
+   WAF block page can itself be JSON-shaped — without this ordering, a
+   Cloudflare-intervened response with a JSON body would slip past as
+   "app-layer" and reproduce the exact misdiagnosis this fix exists for.
+2. Else, **positively identify the app layer** (`content-type:
+   application/json` + a parseable dict body) → `AuthError`, but with a
+   *hedged* message: a 403 JSON body from claude.ai means either an
+   invalid/expired token or a real permission error (e.g. the tracked
+   `org-scoping-resource-methods.md` bug), and the body shape alone can't
+   distinguish them — so the message no longer claims "expired"
+   unconditionally the way the `401` message does.
+3. Else (no Cloudflare evidence, doesn't look like the app layer) →
+   `CloudflareChallengeError` again, but with a message that only claims "not
+   a token problem" — it does *not* confidently blame Cloudflare specifically,
+   since an nginx/other-WAF 403 would otherwise get a confident wrong
+   diagnosis.
+
+`CloudflareChallengeError` subclasses `AuthError`, so existing `except
+AuthError` callers — including `claude-web-backup` — keep working, just with
+corrected messages. A `401` is always `AuthError` unconditionally — Cloudflare
+doesn't challenge with 401. `503`/`429` use the Cloudflare-evidence test only
+(no JSON-body branch), since those codes have legitimate non-Cloudflare causes
+too and aren't the incident this bug tracks.
 
 Regression fixture: `tests/fixtures/cloudflare_challenge.html`, the full,
 live-captured Cloudflare JS challenge response body (bare `curl`, no browser
