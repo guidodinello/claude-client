@@ -1,0 +1,55 @@
+# Baseline CI for a small/single-package Python repo — enforces ruff format,
+# ruff lint, and pytest as a required gate, since pre-commit itself only runs
+# locally and CI is the only place a required check can actually enforce it.
+# Not a strict mirror of .pre-commit-config.yaml: that file pins
+# ruff-pre-commit's rev independently of uv.lock, so the ruff version (and
+# pre-commit's --fix) can differ from what CI runs here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-python:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --dev --locked
+
+      - name: ruff format check
+        run: uv run ruff format --check .
+
+      - name: ruff lint
+        run: uv run ruff check .
+
+  test-python:
+    name: Tests (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --dev --locked
+
+      - name: Run tests
+        run: uv run pytest
