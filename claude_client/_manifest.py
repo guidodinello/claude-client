@@ -44,6 +44,25 @@ def save(directory: Path, entries: dict[str, ManifestEntry]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def prune_targets(previous: dict[str, ManifestEntry], remote_ids: set[str]) -> list[str]:
-    """Filenames recorded for uuids no longer present remotely."""
-    return [entry.filename for uuid, entry in previous.items() if uuid not in remote_ids]
+def prune_targets(
+    previous: dict[str, ManifestEntry], current: dict[str, ManifestEntry]
+) -> list[str]:
+    """
+    Filenames from a prior manifest that no longer belong to any uuid this run.
+
+    Covers both genuine deletions (uuid absent from `current`) and renames (uuid still
+    present but resolved to a different filename this run — the old filename is now an
+    orphan). Never returns a filename that some *other* uuid claims in `current`: that
+    guards against pruning a file that was just written under a reused/colliding name
+    (e.g. a freed filename picked up by a new doc, or a slugify collision across orgs).
+    """
+    current_filenames = {entry.filename for entry in current.values()}
+    targets = []
+    for uuid, entry in previous.items():
+        current_entry = current.get(uuid)
+        if current_entry is not None and current_entry.filename == entry.filename:
+            continue
+        if entry.filename in current_filenames:
+            continue
+        targets.append(entry.filename)
+    return targets

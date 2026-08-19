@@ -162,14 +162,18 @@ class DocsResource:
         previous = _manifest.load(out)
         docs_meta = self.list(project_id)
         filenames = _resolve_doc_filenames(docs_meta)
-        remote_ids = {meta["uuid"] for meta in docs_meta}
 
         results: dict[str, str] = {}
         entries: dict[str, _manifest.ManifestEntry] = {}
         for doc in track(docs_meta, description="Pulling docs…"):
             uuid = doc["uuid"]
+            if "content" not in doc:
+                logger.warning("Doc %s has no content in list response, skipping", uuid)
+                if uuid in previous:
+                    entries[uuid] = previous[uuid]
+                continue
             name = filenames[uuid]
-            content = doc.get("content", "")
+            content = doc["content"]
             dest = out / name
             existed = dest.exists()
             if not force and existed and dest.read_text(encoding="utf-8") == content:
@@ -180,7 +184,7 @@ class DocsResource:
             entries[uuid] = _manifest.ManifestEntry(filename=name, updated_at="")
 
         if prune:
-            for filename in _manifest.prune_targets(previous, remote_ids):
+            for filename in _manifest.prune_targets(previous, entries):
                 (out / filename).unlink(missing_ok=True)
                 results[filename] = "deleted"
 

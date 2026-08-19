@@ -232,7 +232,6 @@ class ProjectsResource:
         """
         out_root = Path(out_dir)
         projects = self.list()
-        remote_ids = {project["uuid"] for _, project in projects}
 
         previous = _manifest.load(out_root)
         scoped: dict[str, ProjectsResource] = {}
@@ -250,11 +249,14 @@ class ProjectsResource:
             except requests.exceptions.RequestException:
                 logger.warning("Failed to pull project '%s', skipping", name)
                 results[name] = False
-                if uuid in previous:
-                    entries[uuid] = previous[uuid]
+                # Keep tracking this uuid's directory even on a first-ever failure (its
+                # dir was already created by `pull`'s mkdir), so a later prune run can
+                # still remove it if the project turns out to be gone for good.
+                fallback = _manifest.ManifestEntry(filename=slug, updated_at="")
+                entries[uuid] = previous.get(uuid, fallback)
 
         if prune:
-            for slug in _manifest.prune_targets(previous, remote_ids):
+            for slug in _manifest.prune_targets(previous, entries):
                 shutil.rmtree(out_root / slug, ignore_errors=True)
 
         _manifest.save(out_root, entries)

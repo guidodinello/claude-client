@@ -17,17 +17,36 @@ def test_save_and_load_round_trip(tmp_path):
 
 
 def test_prune_targets_empty_manifest():
-    assert prune_targets({}, {"doc-1"}) == []
+    current = {"doc-1": ManifestEntry(filename="notes.md", updated_at="")}
+    assert prune_targets({}, current) == []
 
 
-def test_prune_targets_uuid_present_remotely_is_kept():
-    previous = {"doc-1": ManifestEntry(filename="notes.md", updated_at="")}
-    assert prune_targets(previous, {"doc-1"}) == []
+def test_prune_targets_uuid_present_and_unchanged_is_kept():
+    entry = ManifestEntry(filename="notes.md", updated_at="")
+    previous = {"doc-1": entry}
+    current = {"doc-1": entry}
+    assert prune_targets(previous, current) == []
 
 
-def test_prune_targets_uuid_absent_remotely_is_pruned():
+def test_prune_targets_uuid_absent_from_current_is_pruned():
     previous = {
         "doc-1": ManifestEntry(filename="notes.md", updated_at=""),
         "doc-2": ManifestEntry(filename="other.md", updated_at=""),
     }
-    assert prune_targets(previous, {"doc-1"}) == ["other.md"]
+    current = {"doc-1": previous["doc-1"]}
+    assert prune_targets(previous, current) == ["other.md"]
+
+
+def test_prune_targets_renamed_uuid_prunes_old_filename():
+    """A uuid still present but resolved to a new filename orphans its old one."""
+    previous = {"doc-1": ManifestEntry(filename="old-name.md", updated_at="")}
+    current = {"doc-1": ManifestEntry(filename="new-name.md", updated_at="")}
+    assert prune_targets(previous, current) == ["old-name.md"]
+
+
+def test_prune_targets_never_deletes_a_filename_claimed_by_another_live_uuid():
+    """A deleted doc's old filename must not be pruned if a different uuid reused it
+    this run (freed-name reuse) — deleting it would destroy the new doc's file."""
+    previous = {"doc-1": ManifestEntry(filename="notes.md", updated_at="")}
+    current = {"doc-2": ManifestEntry(filename="notes.md", updated_at="")}
+    assert prune_targets(previous, current) == []

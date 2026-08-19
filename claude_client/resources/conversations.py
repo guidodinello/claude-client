@@ -81,7 +81,6 @@ class ConversationsResource:
 
         previous = _manifest.load(out)
         conv_metas = self.list(project_id)
-        remote_ids = {conv_meta["uuid"] for conv_meta in conv_metas}
 
         results: dict[str, str] = {}
         entries: dict[str, _manifest.ManifestEntry] = {}
@@ -120,7 +119,7 @@ class ConversationsResource:
             )
 
         if prune:
-            for filename in _manifest.prune_targets(previous, remote_ids):
+            for filename in _manifest.prune_targets(previous, entries):
                 (out / filename).unlink(missing_ok=True)
                 results[filename] = "deleted"
 

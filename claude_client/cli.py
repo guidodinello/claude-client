@@ -346,7 +346,9 @@ def _build_parser() -> argparse.ArgumentParser:
     c_get.add_argument("conversation_id")
     c_get.set_defaults(func=_conversations_get)
 
-    c_pull = csub.add_parser("pull", help="Pull web conversations → local folder (web wins)")
+    c_pull = csub.add_parser(
+        "pull", help="Pull web conversations → local folder (skips unchanged, web wins if changed)"
+    )
     c_pull.add_argument("project_id")
     c_pull.add_argument("local_dir")
     _add_force_flag(c_pull)
