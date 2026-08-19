@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from curl_cffi import requests
 from logger import get_logger
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from .. import _manifest
 from .._transport import BASE_URL, Transport
 from ..exceptions import NotFoundError
 from ..models import ProjectDict, ProjectExport, ProjectSyncResult
@@ -15,6 +17,45 @@ from .docs import DocsResource
 from .memory import MemoryResource
 
 logger = get_logger(__name__)
+
+
+def _resolve_project_slugs(
+    projects: list[tuple[str, ProjectDict]], previous: dict[str, _manifest.ManifestEntry]
+) -> dict[str, str]:
+    """
+    Disambiguate slugify(name) collisions across every chat-capable org's projects.
+
+    Two projects with the same (or same-after-slugify) name in different orgs would
+    otherwise both write to `out_root / slug`, silently mixing their docs and
+    conversations together. Mirrors `docs.py::_resolve_doc_filenames`.
+
+    A uuid already in the manifest keeps its previously-assigned directory (`stable`
+    below) rather than being re-slugified from scratch every run — otherwise, if a
+    colliding sibling later disappeared, the survivor's slug would drop its
+    disambiguating suffix and rename-then-prune its own directory for no reason other
+    than a sibling being gone from this run's listing. A brand-new uuid only gets a
+    suffix if its bare slug collides with another new uuid this run OR with an
+    already-stable slug on disk.
+    """
+    stable = {uuid: entry.filename for uuid, entry in previous.items()}
+    new_candidates = {
+        project["uuid"]: slugify(project.get("name", project["uuid"]))
+        for _, project in projects
+        if project["uuid"] not in previous
+    }
+    counts: dict[str, int] = {}
+    for slug in new_candidates.values():
+        counts[slug] = counts.get(slug, 0) + 1
+    taken = set(stable.values())
+
+    resolved = dict(stable)
+    for uuid, slug in new_candidates.items():
+        if counts[slug] > 1 or slug in taken:
+            resolved[uuid] = f"{slug}-{uuid[:8]}"
+        else:
+            resolved[uuid] = slug
+            taken.add(slug)
+    return resolved
 
 
 class ProjectsResource:
@@ -172,7 +213,12 @@ class ProjectsResource:
         return render_project(data)
 
     def pull(
-        self, project_id: str, output_dir: str | Path, *, force: bool = False
+        self,
+        project_id: str,
+        output_dir: str | Path,
+        *,
+        force: bool = False,
+        prune: bool = False,
     ) -> ProjectSyncResult:
         """
         Pull a project into a directory: project.md, docs/, conversations/.
@@ -180,7 +226,8 @@ class ProjectsResource:
         project.md (name, description, instructions, memory, controls) is rewritten
         every run — it's small and has no per-file identity to diff against. docs/ and
         conversations/ are pulled incrementally via DocsResource.pull /
-        ConversationsResource.pull; pass force=True to make those unconditional too.
+        ConversationsResource.pull; pass force=True to make those unconditional too, and
+        prune=True to delete local docs/conversations removed on the web.
         Returns the output directory path plus a per-file status for docs/conversations.
         """
         out = Path(output_dir)
@@ -198,14 +245,16 @@ class ProjectsResource:
         )
         (out / "project.md").write_text(render_project_metadata(meta), encoding="utf-8")
 
-        docs_results = self._docs.pull(project_id, out / "docs", force=force)
+        docs_results = self._docs.pull(project_id, out / "docs", force=force, prune=prune)
         conversations_results = self._conversations.pull(
-            project_id, out / "conversations", force=force
+            project_id, out / "conversations", force=force, prune=prune
         )
 
         return ProjectSyncResult(path=out, docs=docs_results, conversations=conversations_results)
 
-    def pull_all(self, out_dir: str | Path, *, force: bool = False) -> dict[str, bool]:
+    def pull_all(
+        self, out_dir: str | Path, *, force: bool = False, prune: bool = False
+    ) -> dict[str, bool]:
         """
         Pull every project across every chat-capable org on this account.
 
@@ -213,22 +262,50 @@ class ProjectsResource:
         (see `pull`). Encapsulates the multi-org scoping so callers don't need their
         own org-to-transport bookkeeping. Returns a map of project name -> success; one
         project failing is logged and skipped, never aborts the rest.
+
+        Pass prune=True to also delete per-project docs/conversations removed on the
+        web (via `pull`) and to remove local project directories for projects deleted
+        on the web. A project directory is only removed once its uuid is confirmed
+        absent from the remote project list; a project whose own pull fails is never
+        pruned, even with prune=True. Two projects that would slugify to the same
+        directory name (e.g. same name in different orgs) are disambiguated with a
+        uuid suffix so neither's pull overwrites the other's mirror.
         """
         out_root = Path(out_dir)
         projects = self.list()
+        previous = _manifest.load(out_root)
+        slugs = _resolve_project_slugs(projects, previous)
 
         scoped: dict[str, ProjectsResource] = {}
         results: dict[str, bool] = {}
+        # uuids confirmed present this run — see docs.py::pull for why this is kept
+        # separate from what gets saved.
+        entries: dict[str, _manifest.ManifestEntry] = {}
         for org_id, project in projects:
             resource = scoped.setdefault(org_id, self._scoped(org_id))
-            name = project.get("name", project["uuid"])
+            uuid = project["uuid"]
+            name = project.get("name", uuid)
+            slug = slugs[uuid]
             try:
-                resource.pull(project["uuid"], out_root / slugify(name), force=force)
+                resource.pull(uuid, out_root / slug, force=force, prune=prune)
                 results[name] = True
+                entries[uuid] = _manifest.ManifestEntry(filename=slug, updated_at="")
             except requests.exceptions.RequestException:
                 logger.warning("Failed to pull project '%s', skipping", name)
                 results[name] = False
+                # Keep tracking this uuid's directory even on a first-ever failure (its
+                # dir was already created by `pull`'s mkdir), so a later prune run can
+                # still remove it if the project turns out to be gone for good.
+                fallback = _manifest.ManifestEntry(filename=slug, updated_at="")
+                entries[uuid] = previous.get(uuid, fallback)
 
+        to_save = {**previous, **entries}
+        if prune:
+            for uuid, slug in _manifest.prune_targets(previous, entries):
+                shutil.rmtree(out_root / slug, ignore_errors=True)
+                to_save.pop(uuid, None)
+
+        _manifest.save(out_root, to_save)
         return results
 
     def _scoped(self, org_id: str) -> ProjectsResource:

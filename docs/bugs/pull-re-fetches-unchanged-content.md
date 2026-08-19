@@ -1,8 +1,7 @@
 # `pull`/`pull_all` re-fetches unchanged docs and conversations every run
 
 Found while reviewing the `claude-web-backup` nightly pipeline (2026-08-02), which
-calls `ProjectsResource.pull_all()` once per account per night. Tracked instead of
-fixed — see status below for why.
+calls `ProjectsResource.pull_all()` once per account per night.
 
 ## The issue
 
@@ -10,8 +9,9 @@ fixed — see status below for why.
 content of every doc and every conversation, and only skips the *write* when the
 rendered markdown already matches the local file:
 
-- `DocsResource.pull` lists all docs, then `get()`s each one
-  (`claude_client/resources/docs.py`).
+- `DocsResource.pull` lists all docs, then `get()`s each one — even though, per a live
+  check against the API, the list response already carries full `content` for every
+  doc, making the per-doc `get()` entirely redundant (`claude_client/resources/docs.py`).
 - `ConversationsResource.pull` lists all conversations (paginated, 30/page), then
   `get()`s each one with full message content
   (`claude_client/resources/conversations.py`).
@@ -23,9 +23,14 @@ There is no etag/`If-Modified-Since`/mtime/hash caching anywhere in the transpor
 layer, so the network cost of a nightly rerun is identical to a first run even when
 nothing changed on the web.
 
-Both list endpoints already return `updated_at` per item
-(`claude_client/models.py`: `DocDict`, `ConversationDict`), which is what makes the
-manifest fix below feasible without any API changes.
+`ConversationDict` carries `updated_at` per item, which is what makes the manifest
+fix below feasible for conversations without any API changes. `DocDict` does not —
+verified live against the docs list endpoint, which returns
+`['content', 'created_at', 'estimated_token_count', 'file_name', 'project_uuid', 'uuid']`
+and nothing resembling a last-modified timestamp. But that same live check also
+showed the list response already contains full `content` (byte-identical to a
+separate `get()`, confirmed on docs up to 62KB) — so docs don't need a
+change-discriminator at all; the fix is deleting the redundant fetch, not skipping it.
 
 ## Who hits it
 
@@ -59,5 +64,26 @@ to hash it is the expensive part.
 
 ## Status
 
-Tracked, not yet fixed. A or B would be their own small PRs; the semantic change in
-A deserves a deliberate decision before implementing.
+**Fixed** (2026-08-19), by two different means depending on what the API actually exposes:
+
+**Conversations — option A, the manifest.** A sidecar manifest
+(`.claude-pull-manifest.json`, `claude_client/_manifest.py`) keyed by remote uuid, storing the
+filename written and the `updated_at` it was pulled at. `ConversationsResource.pull` skips the
+`get()` when the manifest entry's `updated_at` matches the remote list's and the local file
+still exists; `force=True` bypasses the skip (the documented local-edit recovery path), so the
+semantic change flagged above was accepted deliberately.
+
+**Docs — not option A.** The manifest premise (`updated_at` on the list response) doesn't hold
+for docs, but the live check that ruled it out also found the actual fix: the docs list
+response already contains full `content`, so `DocsResource.pull` simply stopped calling
+`get()` per doc — there's no separate fetch left to skip. `DocDict` was corrected to match the
+verified response shape (added `project_uuid`, `estimated_token_count`; still no `updated_at`).
+The manifest is still used for docs, purely to support pruning (see
+`pull-never-prunes-deleted-items.md`), which needs the uuid → filename map and nothing else.
+
+`ProjectsResource.export_data` (and `migrate_project`, which calls it) still does the old
+per-doc `get()` — same redundant fetch, not fixed here since it's export/migrate rather than
+pull; tracked in `todos.md`.
+
+Option B (parallelize fetches) is still open for conversations — orthogonal, tracked in
+`todos.md`.

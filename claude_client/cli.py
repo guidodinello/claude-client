@@ -86,7 +86,9 @@ def _project_export(args: argparse.Namespace) -> None:
 
 def _project_pull(args: argparse.Namespace) -> None:
     client = _client(args, args.project_id)
-    result = client.projects.pull(args.project_id, args.output_dir, force=args.force)
+    result = client.projects.pull(
+        args.project_id, args.output_dir, force=args.force, prune=args.prune
+    )
     _print_pull_results(result.docs, "docs")
     _print_pull_results(result.conversations, "conversations")
     print(f"Pulled to {result.path}/")
@@ -164,7 +166,7 @@ def _docs_rm(args: argparse.Namespace) -> None:
 
 def _docs_pull(args: argparse.Namespace) -> None:
     client = _client(args, args.project_id)
-    results = client.docs.pull(args.project_id, args.local_dir, force=args.force)
+    results = client.docs.pull(args.project_id, args.local_dir, force=args.force, prune=args.prune)
     for name, status in results.items():
         print(f"  [{status}] {name}")
     print(f"Pulled {len(results)} file(s).")
@@ -175,7 +177,7 @@ def _docs_pull(args: argparse.Namespace) -> None:
 
 def _account_pull(args: argparse.Namespace) -> None:
     client = _client(args)
-    results = client.projects.pull_all(args.output_dir, force=args.force)
+    results = client.projects.pull_all(args.output_dir, force=args.force, prune=args.prune)
     for name, ok in results.items():
         print(f"  [{'ok' if ok else 'FAILED'}] {name}")
     succeeded = sum(ok for ok in results.values())
@@ -204,7 +206,9 @@ def _conversations_get(args: argparse.Namespace) -> None:
 
 def _conversations_pull(args: argparse.Namespace) -> None:
     client = _client(args, args.project_id)
-    results = client.conversations.pull(args.project_id, args.local_dir, force=args.force)
+    results = client.conversations.pull(
+        args.project_id, args.local_dir, force=args.force, prune=args.prune
+    )
     for name, status in results.items():
         print(f"  [{status}] {name}")
     print(f"Pulled {len(results)} file(s).")
@@ -218,6 +222,14 @@ def _add_force_flag(parser: argparse.ArgumentParser) -> None:
         "--force",
         action="store_true",
         help="Rewrite every file unconditionally, instead of skipping unchanged ones",
+    )
+
+
+def _add_prune_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="Delete local files/directories removed on the web (off by default)",
     )
 
 
@@ -254,6 +266,7 @@ def _build_parser() -> argparse.ArgumentParser:
     pr_pull.add_argument("project_id")
     pr_pull.add_argument("output_dir")
     _add_force_flag(pr_pull)
+    _add_prune_flag(pr_pull)
     pr_pull.set_defaults(func=_project_pull)
 
     pr_migrate = prsub.add_parser(
@@ -303,6 +316,7 @@ def _build_parser() -> argparse.ArgumentParser:
     d_pull.add_argument("project_id")
     d_pull.add_argument("local_dir")
     _add_force_flag(d_pull)
+    _add_prune_flag(d_pull)
     d_pull.set_defaults(func=_docs_pull)
 
     # ---- account ----
@@ -315,6 +329,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     a_pull.add_argument("output_dir")
     _add_force_flag(a_pull)
+    _add_prune_flag(a_pull)
     a_pull.set_defaults(func=_account_pull)
 
     # ---- conversations ----
@@ -331,10 +346,13 @@ def _build_parser() -> argparse.ArgumentParser:
     c_get.add_argument("conversation_id")
     c_get.set_defaults(func=_conversations_get)
 
-    c_pull = csub.add_parser("pull", help="Pull web conversations → local folder (web wins)")
+    c_pull = csub.add_parser(
+        "pull", help="Pull web conversations → local folder (skips unchanged, web wins if changed)"
+    )
     c_pull.add_argument("project_id")
     c_pull.add_argument("local_dir")
     _add_force_flag(c_pull)
+    _add_prune_flag(c_pull)
     c_pull.set_defaults(func=_conversations_pull)
 
     return root

@@ -56,6 +56,15 @@ away. A defensive option: prune only in "mirror" mode (explicit flag, e.g.
 
 ## Status
 
-Tracked, not yet fixed. The claude-web-backup git repo makes option A safe to
-implement; worth coordinating with the `pull-re-fetches-unchanged-content.md`
-manifest work if both get done, since B shares the manifest.
+**Fixed** (2026-08-19), via option B (manifest-based), sharing the manifest introduced for
+`pull-re-fetches-unchanged-content.md`. `claude_client/_manifest.py` keys entries by remote
+uuid (not filename), which sidesteps the "docs unreliable by filename" problem noted above —
+pruning deletes exactly the filename recorded against a uuid absent from the fresh remote
+list, regardless of how that filename was resolved. This also fixes the rename-orphan case:
+a renamed doc's old path is a stale manifest entry and gets pruned on the next `--prune` run.
+
+Opt-in as recommended: `prune=False` / no `--prune` by default on `DocsResource.pull`,
+`ConversationsResource.pull`, `ProjectsResource.pull`, and `ProjectsResource.pull_all` (which
+also gets its own manifest at the output root, pruning whole project directories). A project
+whose own `pull()` raises is never pruned, even with `prune=True` — its uuid is still counted
+present via the remote project list, independent of pull success.

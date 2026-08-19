@@ -9,6 +9,7 @@ from curl_cffi import requests
 from logger import get_logger
 from rich.progress import track
 
+from .. import _manifest
 from .._transport import BASE_URL, Transport
 from ..exceptions import UploadError
 from ..models import DocDict
@@ -127,43 +128,75 @@ class DocsResource:
     # ----------------------------------------------------------------- pull
 
     def pull(
-        self, project_id: str, output_dir: str | Path, *, force: bool = False
+        self,
+        project_id: str,
+        output_dir: str | Path,
+        *,
+        force: bool = False,
+        prune: bool = False,
     ) -> dict[str, str]:
         """
         Pull knowledge docs from the web project into a local directory.
 
-        Incremental by default: a doc whose content already matches the local file is
+        The docs list endpoint returns full content for every doc in one call (verified
+        against the live API — there's no truncation and no separate fetch needed), so
+        this never calls `get()` per doc; the old per-doc round trip is gone.
+
+        Incremental by content: a doc whose content already matches the local file is
         left untouched and reported "unchanged". Pass force=True to always rewrite
         every file regardless of content (e.g. to recover from local edits).
 
         Remote names are converted to safer local .md filenames. Names that would
         collide on a case-insensitive filesystem receive the document UUID as a suffix.
-        A renamed destination is reported "created"; prior local paths are not removed,
-        and the original remote name is not retained for a later push. Pass name
-        explicitly when pushing if the remote name must be preserved.
+        Pass prune=True to delete local files for docs removed on the web, including
+        stale files left behind by a rename (reported "deleted"); default is off so
+        ad-hoc pulls never delete anything. The original remote name is not retained
+        for a later push — pass name explicitly when pushing if it must be preserved.
 
         Web is always the source of truth — this never writes back to claude.ai.
-        Returns a dict mapping each filename to "created", "updated", or "unchanged".
+        Returns a dict mapping each filename to "created", "updated", "unchanged",
+        "deleted", or "content_missing" (the doc's local file couldn't be verified or
+        refreshed because the list response omitted its content).
         """
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
 
+        previous = _manifest.load(out)
         docs_meta = self.list(project_id)
         filenames = _resolve_doc_filenames(docs_meta)
+
         results: dict[str, str] = {}
-        for meta in track(docs_meta, description="Pulling docs…"):
-            try:
-                doc = self.get(project_id, meta["uuid"])
-            except requests.exceptions.RequestException:
-                logger.warning("Failed to fetch doc %s, skipping", meta.get("uuid", "unknown"))
+        # uuids confirmed present this run — used to detect deletions/renames. Kept
+        # separate from what gets saved: a uuid absent from the remote list entirely
+        # must NOT lose its manifest entry just because a non-prune run doesn't touch
+        # it, or a later --prune run would have nothing left to prune it with.
+        entries: dict[str, _manifest.ManifestEntry] = {}
+        for doc in track(docs_meta, description="Pulling docs…"):
+            uuid = doc["uuid"]
+            name = filenames[uuid]
+            if "content" not in doc:
+                logger.warning("Doc %s has no content in list response, skipping", uuid)
+                if uuid in previous:
+                    entries[uuid] = previous[uuid]
+                if not (out / name).exists():
+                    results[name] = "content_missing"
                 continue
-            name = filenames[meta["uuid"]]
-            content = doc.get("content", "")
+            content = doc["content"]
             dest = out / name
             existed = dest.exists()
             if not force and existed and dest.read_text(encoding="utf-8") == content:
                 results[name] = "unchanged"
-                continue
-            dest.write_text(content, encoding="utf-8")
-            results[name] = "updated" if existed else "created"
+            else:
+                dest.write_text(content, encoding="utf-8")
+                results[name] = "updated" if existed else "created"
+            entries[uuid] = _manifest.ManifestEntry(filename=name, updated_at="")
+
+        to_save = {**previous, **entries}
+        if prune:
+            for uuid, filename in _manifest.prune_targets(previous, entries):
+                (out / filename).unlink(missing_ok=True)
+                results[filename] = "deleted"
+                to_save.pop(uuid, None)
+
+        _manifest.save(out, to_save)
         return results
