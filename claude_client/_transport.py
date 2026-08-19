@@ -12,7 +12,7 @@ from http import HTTPStatus
 from curl_cffi import requests
 from logger import get_logger
 
-from .exceptions import AuthError
+from .exceptions import AuthError, CloudflareChallengeError
 from .models import OrgDict
 
 logger = get_logger(__name__)
@@ -25,6 +25,63 @@ _USER_AGENT = (
 )
 _IMPERSONATE = "chrome110"
 _DEFAULT_TIMEOUT = 30  # seconds; guards against a hung connection blocking forever
+
+_TOKEN_ERROR_MSG = (
+    "Session token is invalid or expired. Refresh CLAUDE_SESSION_TOKEN from claude.ai."
+)
+_CLOUDFLARE_ERROR_MSG = (
+    "Request was blocked by Cloudflare before reaching claude.ai — this is not a "
+    "token problem, so refreshing CLAUDE_SESSION_TOKEN will not help. If you are "
+    "on a VPN, try disabling it: VPN exit IPs commonly carry poor Cloudflare "
+    "reputation and trigger the JS challenge on their own."
+)
+
+# Substrings that only show up in Cloudflare's JS-challenge HTML, never in a
+# claude.ai app response. Confirmed against a live challenge capture (see
+# tests/fixtures/cloudflare_challenge.html).
+_CHALLENGE_BODY_MARKERS = (
+    "Just a moment",
+    "cf-browser-verification",
+    "Attention Required",
+)
+
+
+def _is_app_layer_json(resp: requests.Response) -> bool:
+    """True if `resp` looks like a real claude.ai JSON response.
+
+    Used to positively identify the app layer on a 403, rather than negatively
+    identifying Cloudflare — claude.ai itself sits behind Cloudflare, so
+    Cloudflare-specific headers are present on legitimate app-layer responses
+    too and can't be used as the primary signal. An unrecognized response is
+    treated as *not* the app layer, so it never gets misreported as a token
+    problem.
+    """
+    if "application/json" not in resp.headers.get("content-type", ""):
+        return False
+    try:
+        return isinstance(resp.json(), dict)
+    except json.JSONDecodeError:
+        return False
+
+
+def _is_cloudflare_challenge(resp: requests.Response) -> bool:
+    """True if `resp` is a Cloudflare challenge/block, not a claude.ai response.
+
+    `cf-mitigated` is set by Cloudflare only when it actively intervenes, so its
+    presence alone is conclusive. Otherwise require both the `server` header
+    and a challenge marker in the body — `server: cloudflare` alone is present
+    on every claude.ai response (it's the CDN in front of the whole site) and
+    proves nothing by itself.
+    """
+    if resp.headers.get("cf-mitigated"):
+        return True
+    if resp.headers.get("server") != "cloudflare":
+        return False
+    try:
+        body = resp.text
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return any(marker in body for marker in _CHALLENGE_BODY_MARKERS)
 
 
 class Transport:
@@ -116,10 +173,19 @@ class Transport:
         return resp
 
     def _check_auth(self, resp: requests.Response) -> None:
-        if resp.status_code in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
-            raise AuthError(
-                "Session token is invalid or expired. Refresh CLAUDE_SESSION_TOKEN from claude.ai."
-            )
+        if resp.status_code == HTTPStatus.UNAUTHORIZED:
+            raise AuthError(_TOKEN_ERROR_MSG)
+        if resp.status_code == HTTPStatus.FORBIDDEN:
+            if _is_app_layer_json(resp):
+                raise AuthError(_TOKEN_ERROR_MSG)
+            raise CloudflareChallengeError(_CLOUDFLARE_ERROR_MSG)
+        # A real 503/429 from claude.ai's own app layer falls through untouched;
+        # raise_for_status() reports it as the HTTP error it actually is.
+        if resp.status_code in (
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            HTTPStatus.TOO_MANY_REQUESTS,
+        ) and _is_cloudflare_challenge(resp):
+            raise CloudflareChallengeError(_CLOUDFLARE_ERROR_MSG)
 
     # ------------------------------------------------------------------- org
 

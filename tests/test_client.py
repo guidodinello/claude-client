@@ -1,12 +1,19 @@
 """Unit tests for ClaudeClient — HTTP layer mocked via unittest.mock."""
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from curl_cffi.requests.exceptions import RequestException
 
-from claude_client import AuthError, ClaudeClient, NotFoundError, UploadError
+from claude_client import (
+    AuthError,
+    ClaudeClient,
+    CloudflareChallengeError,
+    NotFoundError,
+    UploadError,
+)
 from claude_client.render import conversation_to_markdown, slugify
 
 ORG_ID = "org-uuid"
@@ -29,11 +36,15 @@ DOC_META = {"uuid": DOC_UUID, "file_name": "notes.md", "created_at": "2024-01-01
 DOC_FULL = {**DOC_META, "content": "hello world"}
 
 
-def _mock_response(json_data, status_code: int = 200) -> MagicMock:
+def _mock_response(
+    json_data, status_code: int = 200, headers: dict | None = None, text: str = ""
+) -> MagicMock:
     r = MagicMock()
     r.status_code = status_code
     r.json.return_value = json_data
     r.raise_for_status = MagicMock()
+    r.headers = headers or {}
+    r.text = text
     return r
 
 
@@ -69,17 +80,120 @@ def test_org_id_override_shadows_cached_property():
 
 
 @patch("claude_client._transport.requests")
-def test_check_auth_raises_on_401(mock_req, client):
+def test_check_auth_401_is_plain_auth_error_not_cloudflare(mock_req, client):
+    """A 401 is always the app layer — Cloudflare never challenges with 401."""
     mock_req.get.return_value = _mock_response({}, status_code=401)
-    with pytest.raises(AuthError):
+    with pytest.raises(AuthError) as exc_info:
+        _ = client.org_id
+    assert not isinstance(exc_info.value, CloudflareChallengeError)
+
+
+@patch("claude_client._transport.requests")
+def test_check_auth_403_app_layer_json_is_plain_auth_error(mock_req, client):
+    """A 403 that parses as claude.ai's own JSON error body is a real token problem."""
+    mock_req.get.return_value = _mock_response(
+        {"error": {"type": "permission_error"}},
+        status_code=403,
+        headers={"content-type": "application/json"},
+    )
+    with pytest.raises(AuthError) as exc_info:
+        _ = client.org_id
+    assert not isinstance(exc_info.value, CloudflareChallengeError)
+    assert "expired" in str(exc_info.value)
+
+
+@patch("claude_client._transport.requests")
+def test_check_auth_403_unrecognized_body_is_cloudflare_challenge(mock_req, client):
+    """A 403 that doesn't look like the app layer is treated as a Cloudflare block —
+    the safe direction to fail, since an unrecognized response should never claim
+    the token expired."""
+    mock_req.get.return_value = _mock_response({}, status_code=403)
+    with pytest.raises(CloudflareChallengeError) as exc_info:
+        _ = client.org_id
+    assert "VPN" in str(exc_info.value)
+    assert "expired" not in str(exc_info.value)
+
+
+def test_is_cloudflare_challenge_recognizes_live_captured_response():
+    """Regression fixture: a live-captured Cloudflare challenge response (see
+    tests/fixtures/cloudflare_challenge.html) — the exact bytes this repo
+    actually received from Cloudflare, not a hand-written guess at its shape.
+
+    Calls the body-marker helper directly (no `cf-mitigated` header) so this
+    exercises the marker-matching branch specifically, rather than being
+    short-circuited by the (also-valid, separately tested) header check.
+    """
+    from claude_client._transport import _is_cloudflare_challenge
+
+    challenge_html = (Path(__file__).parent / "fixtures" / "cloudflare_challenge.html").read_text()
+    resp = _mock_response(
+        {},
+        status_code=403,
+        headers={"server": "cloudflare", "content-type": "text/html"},
+        text=challenge_html,
+    )
+    assert _is_cloudflare_challenge(resp)
+
+
+@patch("claude_client._transport.requests")
+def test_check_auth_403_real_cloudflare_challenge_body(mock_req, client):
+    """End-to-end: the live-captured challenge response, run through the full
+    request path, raises CloudflareChallengeError rather than AuthError."""
+    challenge_html = (Path(__file__).parent / "fixtures" / "cloudflare_challenge.html").read_text()
+    mock_req.get.return_value = _mock_response(
+        {},
+        status_code=403,
+        headers={"server": "cloudflare", "content-type": "text/html"},
+        text=challenge_html,
+    )
+    with pytest.raises(CloudflareChallengeError):
         _ = client.org_id
 
 
 @patch("claude_client._transport.requests")
-def test_check_auth_raises_on_403(mock_req, client):
-    mock_req.get.return_value = _mock_response({}, status_code=403)
-    with pytest.raises(AuthError):
+def test_check_auth_403_cf_mitigated_header_is_conclusive(mock_req, client):
+    """`cf-mitigated` is set by Cloudflare only when it actively intervenes —
+    conclusive on its own, no body sniff needed."""
+    mock_req.get.return_value = _mock_response(
+        {}, status_code=403, headers={"cf-mitigated": "challenge"}
+    )
+    with pytest.raises(CloudflareChallengeError):
         _ = client.org_id
+
+
+@patch("claude_client._transport.requests")
+def test_check_auth_503_cloudflare_challenge(mock_req, client):
+    mock_req.get.return_value = _mock_response(
+        {},
+        status_code=503,
+        headers={"server": "cloudflare"},
+        text="<title>Just a moment...</title>",
+    )
+    with pytest.raises(CloudflareChallengeError):
+        _ = client.org_id
+
+
+def test_check_auth_503_without_cloudflare_evidence_is_not_challenge():
+    """A real 503 from claude.ai itself (no Cloudflare headers/body) must not be
+    misreported as a Cloudflare block — _check_auth should raise nothing, leaving
+    the caller's raise_for_status() to report it as the plain HTTP error it is."""
+    from claude_client._transport import Transport
+
+    resp = _mock_response({}, status_code=503)
+    Transport(TOKEN)._check_auth(resp)  # must not raise
+
+
+@patch("claude_client._transport.requests")
+def test_cloudflare_challenge_error_is_caught_by_except_auth_error(mock_req, client):
+    """Pins the backward-compatibility contract: existing `except AuthError`
+    callers (e.g. claude-web-backup, outside this repo) keep working unchanged."""
+    mock_req.get.return_value = _mock_response({}, status_code=403)
+    try:
+        _ = client.org_id
+    except AuthError as exc:
+        assert isinstance(exc, CloudflareChallengeError)
+    else:
+        pytest.fail("expected AuthError (as CloudflareChallengeError) to be raised")
 
 
 # -------------------------------------------------------------------- projects

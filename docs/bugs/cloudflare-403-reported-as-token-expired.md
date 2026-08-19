@@ -43,28 +43,42 @@ reputation scores, which is enough on its own to trigger the JS challenge
 regardless of TLS/browser fingerprinting. Worth checking VPN state first the
 next time this error shows up, before re-issuing tokens.
 
-## Fix options, best first
+## Fix shipped
 
-**A. Detect the Cloudflare challenge specifically and raise a distinct error.**
-Check `resp.headers.get("server") == "cloudflare"` combined with either a `403`
-lacking claude.ai's normal JSON error shape, or a body sniff for the challenge
-page (`cf-mitigated` header, or `<title>Just a moment` in the HTML). Raise a new
-`CloudflareChallengeError(AppError)` (or similar) with a message that doesn't
-tell the user to refresh their token — something like "Request was blocked by
-Cloudflare before reaching claude.ai; this is not a token problem." This is the
-only fix that actually stops the misdiagnosis.
+The header-gate in option A below turned out to be unsafe as written: claude.ai
+is itself served through Cloudflare, so `server: cloudflare` / `cf-ray` are
+present on **legitimate** app-layer responses too, including a genuine expired
+token. Gating on them would have flipped which case gets misdiagnosed, not
+fixed it — confirmed by capturing a live invalid-token 403 through the real
+client (`curl_cffi`, `impersonate="chrome110"`), which came back with
+`server: cloudflare` in the headers and a normal claude.ai JSON error body.
 
-**B. Only ever collapse a real `401` into `AuthError`; treat `403` as a distinct,
-more cautiously-worded error** even without full Cloudflare detection — a `403`
-is "forbidden", not necessarily "expired," and conflating them already loses
-information regardless of Cloudflare.
+`_check_auth` (`claude_client/_transport.py`) now uses the inverse test for a
+`403`: **positively identify the app layer** (`content-type: application/json`
++ a parseable dict body) → `AuthError`; anything else → `CloudflareChallengeError`
+(a subclass of `AuthError`, so existing `except AuthError` callers — including
+`claude-web-backup` — keep working, just with the corrected message). This
+fails in the safe direction: an unrecognized response never claims the token
+expired. A `401` is always `AuthError` unconditionally — Cloudflare doesn't
+challenge with 401. `503`/`429` use the opposite test (positively identify
+Cloudflare via `cf-mitigated` or `server: cloudflare` + a challenge-body
+marker), since those codes have legitimate non-Cloudflare causes too.
 
-**C. Keep an escape hatch for manual diagnosis.** Even with A/B done, it's worth
-keeping (or exposing publicly) a low-level path that skips `_check_auth` and
-returns the raw response, so a caller stuck on a misleading error can always
-get the real status/headers/body without monkeypatching `_transport.py` — that's
-what had to happen to actually diagnose this incident.
+The new message names the VPN explicitly, since that's the confirmed trigger:
+"Request was blocked by Cloudflare before reaching claude.ai — this is not a
+token problem... If you are on a VPN, try disabling it."
+
+Regression fixture: `tests/fixtures/cloudflare_challenge.html`, the full,
+live-captured Cloudflare JS challenge response body (bare `curl`, no browser
+impersonation, tripped the challenge even without a VPN — impersonated
+`curl_cffi` requests did not, consistent with TLS-fingerprint/IP-reputation
+being the trigger).
+
+Not shipped: option C (raw-response escape hatch) — no natural home in the
+current design since all four HTTP verbs call `_check_auth` unconditionally,
+so it would be a new public method rather than a flag; left for a separate PR
+if it's ever needed again.
 
 ## Status
 
-Tracked, not yet fixed.
+Fixed.
