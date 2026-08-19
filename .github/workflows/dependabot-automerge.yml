@@ -1,13 +1,13 @@
 # Auto-merges Dependabot's own PRs — patch/minor only, major stays manual.
 #
-# Requires a GitHub App to mint the actual merge token — see below for why,
-# and docs/github-standard.md § Dependabot for the exact setup steps
-# (create the App, install it, add two Dependabot secrets). Without that
-# App configured, this workflow degrades gracefully: it reports "not
-# configured" and leaves the PR for a manual merge, rather than failing.
-#
-# Adopt: cp to .github/workflows/dependabot-automerge.yml. Fully generic,
-# no per-repo edits needed — the App ID/key come from secrets, not this file.
+# Requires a GitHub App to mint the actual merge token — see below for why.
+# Setup: create the App, install it on this repo, then add its ID and
+# private key as **Dependabot** secrets (Settings → Secrets and variables →
+# Dependabot, not Actions secrets — a Dependabot-triggered workflow cannot
+# read Actions secrets): AUTOMERGE_APP_ID, AUTOMERGE_APP_PRIVATE_KEY.
+# Without that App configured, this workflow degrades gracefully: it
+# reports "not configured" and leaves the PR for a manual merge, rather
+# than failing.
 name: Dependabot auto-merge
 
 on: pull_request
@@ -57,6 +57,7 @@ jobs:
       # success(), so a failed mint already skips this step, but naming the dependency means
       # it no longer rests on that subtlety.
       - name: Auto-merge patch and minor updates
+        id: auto-merge
         if: |
           steps.app-token.outcome == 'success' &&
           (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
@@ -65,6 +66,23 @@ jobs:
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      # A configured App and a valid token don't guarantee the auto-merge step above ran:
+      # a semver-major bump (or an update-type Dependabot doesn't report) intentionally
+      # skips it, since only patch/minor auto-merge. Without this step that case was a
+      # fully green run with zero output — indistinguishable from "nothing needed doing."
+      - name: Report that this update does not qualify for auto-merge
+        if: steps.app-token.outcome == 'success' && steps.auto-merge.outcome == 'skipped'
+        run: |
+          echo "::notice title=Dependabot auto-merge skipped::Update type '$UPDATE_TYPE' is not patch/minor, so this PR was left for manual review and merge."
+          {
+            echo "### Dependabot auto-merge: skipped for this update"
+            echo
+            echo "Update type \`$UPDATE_TYPE\` is not patch/minor (auto-merge only"
+            echo "covers those), so this PR was left for manual review and merge."
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
 
       # Three outcomes, each reported distinctly. "Auto-merge quietly stopped working" is
       # the exact failure this workflow exists to prevent, so it must not fail that way
