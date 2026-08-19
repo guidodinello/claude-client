@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.13"
 
 [[package]]
@@ -90,7 +90,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "curl-cffi", specifier = ">=0.7" },
-    { name = "logger", directory = "../logger" },
+    { name = "logger", git = "https://github.com/guidodinello/logger?branch=main" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "rich", specifier = ">=15.0.0" },
 ]
@@ -184,12 +184,7 @@ wheels = [
 [[package]]
 name = "logger"
 version = "0.1.0"
-source = { directory = "../logger" }
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [{ name = "ruff", specifier = ">=0.15.12" }]
+source = { git = "https://github.com/guidodinello/logger?branch=main#54b5902d8d4ae639a9ada9ca1100dcc6a837f84a" }
 
 [[package]]
 name = "markdown-it-py"
