@@ -1330,6 +1330,26 @@ def test_conversations_pull_standalone_prune_deletes_removed_conversation(
 
 
 @patch("claude_client._transport.requests")
+def test_projects_export_data_does_not_fetch_docs_individually(mock_req, client):
+    """docs.list() already returns full content per doc, so export_data must not call
+    docs.get() per doc — that would be the same N+1 pattern already fixed in
+    DocsResource.pull. No `.../docs/{doc_id}` GET should appear here at all."""
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(PROJECT_RESPONSE),  # get_project
+        _mock_response([DOC_FULL]),  # list_docs (content included)
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+
+    export = client.projects.export_data(PROJECT_ID)
+
+    assert export.docs == [DOC_FULL]
+    assert mock_req.get.call_count == 6  # no extra per-doc GET beyond the ones listed above
+
+
+@patch("claude_client._transport.requests")
 def test_projects_pull_raises_ambiguous_on_multi_org_unpinned_account(mock_req, client, tmp_path):
     """The composite path (pull/export/export_data, all built on projects.get) is
     scoped the same way as the direct resource methods — an unpinned multi-org

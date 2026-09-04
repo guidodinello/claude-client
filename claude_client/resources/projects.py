@@ -175,18 +175,9 @@ class ProjectsResource:
         knowledge docs, and all conversations with their messages.
         """
         project = self.get(project_id)
-        docs_meta = self._docs.list(project_id)
-
-        docs = []
-        for meta in docs_meta:
-            try:
-                docs.append(self._docs.get(project_id, meta["uuid"]))
-            except requests.exceptions.RequestException:
-                logger.warning(
-                    "Failed to fetch doc %s for export, using metadata only",
-                    meta.get("uuid", "unknown"),
-                )
-                docs.append(meta)
+        # docs.list() already returns full content per doc (verified live, same as
+        # DocsResource.pull relies on) — no separate per-doc get() needed.
+        docs = self._docs.list(project_id)
 
         memory_data = self._memory.get(project_id)
 
