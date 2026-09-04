@@ -88,6 +88,9 @@ claude-client conversations pull <project-id> ./local-convos/
 
 # Pull every project across every chat-capable org to a directory
 claude-client account pull ./all-projects/
+
+# Pull every standalone (non-project) conversation across every chat-capable org
+claude-client account pull-conversations ./standalone-convos/
 ```
 
 ## Python usage
@@ -131,6 +134,11 @@ conv = client.conversations.get(conversation_id)
 # pull manifest is never re-fetched. force=True bypasses that; prune=True deletes local
 # files for conversations removed on the web.
 client.conversations.pull(project_id, "./local-convos/")
+
+# Standalone (non-project) conversations — account-wide, like pull_all. Call on an
+# unscoped client, not one already pinned to a single org.
+standalone = client.conversations.list_standalone()  # this org only
+client.conversations.pull_standalone("./standalone-convos/")  # every chat-capable org
 
 # Project composite operations
 markdown = client.projects.export(project_id)  # single markdown string

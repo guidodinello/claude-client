@@ -183,6 +183,15 @@ def _account_pull(args: argparse.Namespace) -> None:
     print(f"Pulled {succeeded}/{len(results)} project(s) to {args.output_dir}/")
 
 
+def _account_pull_conversations(args: argparse.Namespace) -> None:
+    client = _client(args)
+    results = client.conversations.pull_standalone(
+        args.output_dir, force=args.force, prune=args.prune
+    )
+    _print_pull_results(results, "conversations")
+    print(f"Pulled {len(results)} conversation(s) to {args.output_dir}/")
+
+
 # --------------------------------------------------------------- conversations
 
 
@@ -330,6 +339,15 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_force_flag(a_pull)
     _add_prune_flag(a_pull)
     a_pull.set_defaults(func=_account_pull)
+
+    a_pull_conv = asub.add_parser(
+        "pull-conversations",
+        help="Pull every standalone (non-project) conversation to a directory",
+    )
+    a_pull_conv.add_argument("output_dir")
+    _add_force_flag(a_pull_conv)
+    _add_prune_flag(a_pull_conv)
+    a_pull_conv.set_defaults(func=_account_pull_conversations)
 
     # ---- conversations ----
     conversations = sub.add_parser("conversations", help="Conversation operations")

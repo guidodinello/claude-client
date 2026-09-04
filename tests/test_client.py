@@ -1096,6 +1096,124 @@ def test_conversations_pull_fetch_failure_preserves_entry_for_later_prune(
     assert results["test-chat-conv-uui.md"] == "deleted"
 
 
+# ------------------------------------------------------------ conversations: standalone
+
+
+def _standalone_conv(uuid: str, name: str = "Standalone Chat") -> dict:
+    """A chat_conversations list entry with no project_uuid (i.e. not in any project)."""
+    return {**CONVERSATION_META[0], "uuid": uuid, "name": name, "project_uuid": None}
+
+
+def _standalone_detail(uuid: str, name: str = "Standalone Chat") -> dict:
+    return {**CONVERSATION_DETAIL, "uuid": uuid, "name": name}
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_list_standalone_filters_out_project_scoped(mock_req, client):
+    project_conv = CONVERSATION_META[0]  # has project_uuid set
+    standalone_conv = _standalone_conv("standalone-uuid")
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),  # org_id
+        _mock_response([project_conv, standalone_conv]),  # chat_conversations, short page
+    ]
+
+    convs = client.conversations.list_standalone()
+
+    assert len(convs) == 1
+    assert convs[0]["uuid"] == "standalone-uuid"
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_list_standalone_paginates_until_short_page(mock_req, client):
+    from claude_client.resources.conversations import _STANDALONE_PAGE_LIMIT
+
+    full_page = [_standalone_conv(f"c{i}") for i in range(_STANDALONE_PAGE_LIMIT)]
+    short_page = [_standalone_conv("last")]
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response(full_page),
+        _mock_response(short_page),
+    ]
+
+    convs = client.conversations.list_standalone()
+
+    assert len(convs) == _STANDALONE_PAGE_LIMIT + 1
+    assert mock_req.get.call_count == 3  # org lookup + 2 pages
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_standalone_created(mock_req, client, tmp_path):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),  # chat_capable_org_ids()
+        _mock_response([_standalone_conv("standalone-uuid")]),  # list_standalone, short page
+        _mock_response(_standalone_detail("standalone-uuid")),  # get()
+    ]
+
+    results = client.conversations.pull_standalone(tmp_path)
+
+    assert len(results) == 1
+    assert results["standalone-chat-standalo.md"] == "created"
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_standalone_multi_org_shares_one_manifest(mock_req, client, tmp_path):
+    """Each org's standalone chats land in the same flat directory, via a transport
+    correctly pinned to that org — not the (possibly unscoped) outer `self`."""
+    other_org = {"uuid": OTHER_ORG_ID, "capabilities": ["chat"], "name": "Other Org"}
+    mock_req.get.side_effect = [
+        _mock_response([*ORGS_RESPONSE, other_org]),  # chat_capable_org_ids()
+        _mock_response([_standalone_conv("conv-a", "Chat A")]),  # org 1: list_standalone
+        _mock_response(_standalone_detail("conv-a", "Chat A")),  # org 1: get()
+        _mock_response([_standalone_conv("conv-b", "Chat B")]),  # org 2: list_standalone
+        _mock_response(_standalone_detail("conv-b", "Chat B")),  # org 2: get()
+    ]
+
+    results = client.conversations.pull_standalone(tmp_path)
+
+    assert len(results) == 2
+    assert results["chat-a-conv-a.md"] == "created"
+    assert results["chat-b-conv-b.md"] == "created"
+    assert (tmp_path / MANIFEST_NAME).exists()
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_standalone_multi_org_unpinned_client_does_not_raise(
+    mock_req, client, tmp_path
+):
+    """Regression guard: pull_standalone must scope each org's get() through a pinned
+    transport, not the outer client's — which may be unscoped on a multi-org account and
+    would otherwise raise AmbiguousOrgError the moment a conversation is fetched."""
+    other_org = {"uuid": OTHER_ORG_ID, "capabilities": ["chat"], "name": "Other Org"}
+    mock_req.get.side_effect = [
+        _mock_response([*ORGS_RESPONSE, other_org]),
+        _mock_response([_standalone_conv("conv-a")]),
+        _mock_response(_standalone_detail("conv-a")),
+        _mock_response([]),  # org 2: no standalone chats
+    ]
+
+    results = client.conversations.pull_standalone(tmp_path)
+
+    assert len(results) == 1
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_standalone_prune_deletes_removed_conversation(
+    mock_req, client, tmp_path
+):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([_standalone_conv("standalone-uuid")]),
+        _mock_response(_standalone_detail("standalone-uuid")),
+    ]
+    client.conversations.pull_standalone(tmp_path)
+
+    mock_req.get.side_effect = [_mock_response([])]  # gone on the web now
+    results = client.conversations.pull_standalone(tmp_path, prune=True)
+
+    assert results["standalone-chat-standalo.md"] == "deleted"
+    assert not (tmp_path / "standalone-chat-standalo.md").exists()
+
+
 # --------------------------------------------------------------------- projects
 # (composite: pull / pull_all, which pull docs + conversations + memory together)
 
