@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from curl_cffi import requests
 from logger import get_logger
-from rich.progress import track
+from rich.progress import Progress
 
 from .. import _manifest
 from .._transport import BASE_URL, Transport
@@ -15,6 +16,9 @@ logger = get_logger(__name__)
 
 _PAGE_LIMIT = 30
 _STANDALONE_PAGE_LIMIT = 200  # this endpoint tolerates far larger pages than conversations_v2
+# Conservative: this endpoint isn't documented as rate-limited, but the impersonated-browser
+# fingerprint in _transport.py is itself evidence claude.ai is bot-detection sensitive.
+_MAX_CONVERSATION_FETCH_WORKERS = 5
 
 
 class ConversationsResource:
@@ -68,7 +72,13 @@ class ConversationsResource:
         return resp.json()
 
     def _pull_conversations(
-        self, conv_metas: list[ConversationDict], out: Path, *, force: bool
+        self,
+        conv_metas: list[ConversationDict],
+        out: Path,
+        *,
+        force: bool,
+        progress: Progress,
+        label: str,
     ) -> tuple[
         dict[str, str], dict[str, _manifest.ManifestEntry], dict[str, _manifest.ManifestEntry]
     ]:
@@ -81,6 +91,20 @@ class ConversationsResource:
         holds only uuids confirmed present this run (see the inline comment below for
         why that's kept separate from what eventually gets saved), and `previous` is
         returned so callers can compute `to_save` and prune targets themselves.
+
+        `progress` is an already-open `rich.progress.Progress` owned by the caller (see
+        `pull`/`pull_standalone`) — this method only adds its own task to it, under
+        `label`, so multiple calls (e.g. one per org in `pull_standalone`) share one
+        rendered display instead of each opening a separate one.
+
+        Conversations that need a network fetch (i.e. not skipped as unchanged) are
+        fetched concurrently via a bounded thread pool — `self.get()` opens a fresh
+        HTTP session per call (curl_cffi, not a shared `Session`), so this is safe
+        without locking. Futures are drained in submission order (not `as_completed`)
+        so that filename-collision tie-breaking and the reported `results`/`entries`
+        stay identical to a purely sequential run. All dict/disk writes happen here,
+        in the calling thread, while futures are drained — never inside a worker
+        thread — so no lock is needed for `results`/`entries`.
         """
         previous = _manifest.load(out)
         results: dict[str, str] = {}
@@ -88,7 +112,9 @@ class ConversationsResource:
         # separate from what gets saved (stale, remote-absent entries must survive a
         # non-prune run so a later --prune can still find them).
         entries: dict[str, _manifest.ManifestEntry] = {}
-        for conv_meta in track(conv_metas, description="Pulling conversations…"):
+
+        to_fetch: list[tuple[str, str]] = []  # (uuid, remote_updated_at)
+        for conv_meta in conv_metas:
             uuid = conv_meta["uuid"]
             prior = previous.get(uuid)
             remote_updated_at = conv_meta.get("updated_at", "")
@@ -103,27 +129,69 @@ class ConversationsResource:
                 results[prior.filename] = "unchanged"
                 entries[uuid] = prior
                 continue
+            to_fetch.append((uuid, remote_updated_at))
 
-            try:
-                conv = self.get(uuid)
-            except requests.exceptions.RequestException:
-                logger.warning("Failed to fetch conversation %s, skipping", uuid)
-                if prior is not None:
-                    entries[uuid] = prior
-                continue
+        if not to_fetch:
+            return results, entries, previous
 
-            content = conversation_to_markdown(conv)
-            filename = conversation_filename(conv)
-            dest = out / filename
-            existed = dest.exists()
-            if not force and existed and dest.read_text(encoding="utf-8") == content:
-                results[filename] = "unchanged"
-            else:
-                dest.write_text(content, encoding="utf-8")
-                results[filename] = "updated" if existed else "created"
-            entries[uuid] = _manifest.ManifestEntry(filename=filename, updated_at=remote_updated_at)
+        task_id = progress.add_task(label, total=len(to_fetch))
+        with ThreadPoolExecutor(max_workers=_MAX_CONVERSATION_FETCH_WORKERS) as pool:
+            futures = [pool.submit(self.get, uuid) for uuid, _ in to_fetch]
+            for (uuid, remote_updated_at), future in zip(to_fetch, futures, strict=True):
+                prior = previous.get(uuid)
+                try:
+                    conv = future.result()
+                except requests.exceptions.RequestException:
+                    logger.warning("Failed to fetch conversation %s, skipping", uuid)
+                    if prior is not None:
+                        entries[uuid] = prior
+                    progress.advance(task_id)
+                    continue
+
+                content = conversation_to_markdown(conv)
+                filename = conversation_filename(conv)
+                dest = out / filename
+                existed = dest.exists()
+                if not force and existed and dest.read_text(encoding="utf-8") == content:
+                    results[filename] = "unchanged"
+                else:
+                    dest.write_text(content, encoding="utf-8")
+                    results[filename] = "updated" if existed else "created"
+                entries[uuid] = _manifest.ManifestEntry(
+                    filename=filename, updated_at=remote_updated_at
+                )
+                progress.advance(task_id)
 
         return results, entries, previous
+
+    def _pull_into(
+        self,
+        project_id: str,
+        output_dir: str | Path,
+        *,
+        force: bool,
+        prune: bool,
+        progress: Progress,
+        label: str,
+    ) -> dict[str, str]:
+        """Worker for `pull` — fetches into an already-open, caller-owned `progress`."""
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        conv_metas = self.list(project_id)
+        results, entries, previous = self._pull_conversations(
+            conv_metas, out, force=force, progress=progress, label=label
+        )
+
+        to_save = {**previous, **entries}
+        if prune:
+            for uuid, filename in _manifest.prune_targets(previous, entries):
+                (out / filename).unlink(missing_ok=True)
+                results[filename] = "deleted"
+                to_save.pop(uuid, None)
+
+        _manifest.save(out, to_save)
+        return results
 
     def pull(
         self,
@@ -146,21 +214,15 @@ class ConversationsResource:
         (reported "deleted"); default is off so ad-hoc pulls never delete anything.
         Returns a dict mapping each filename to "created", "updated", "unchanged", or "deleted".
         """
-        out = Path(output_dir)
-        out.mkdir(parents=True, exist_ok=True)
-
-        conv_metas = self.list(project_id)
-        results, entries, previous = self._pull_conversations(conv_metas, out, force=force)
-
-        to_save = {**previous, **entries}
-        if prune:
-            for uuid, filename in _manifest.prune_targets(previous, entries):
-                (out / filename).unlink(missing_ok=True)
-                results[filename] = "deleted"
-                to_save.pop(uuid, None)
-
-        _manifest.save(out, to_save)
-        return results
+        with Progress() as progress:
+            return self._pull_into(
+                project_id,
+                output_dir,
+                force=force,
+                prune=prune,
+                progress=progress,
+                label="Pulling conversations…",
+            )
 
     def list_standalone(self) -> list[ConversationDict]:
         """
@@ -224,13 +286,18 @@ class ConversationsResource:
         results: dict[str, str] = {}
         entries: dict[str, _manifest.ManifestEntry] = {}
         previous: dict[str, _manifest.ManifestEntry] = {}
-        for org_id in self._t.chat_capable_org_ids():
-            scoped = type(self)(self._t.scoped(org_id))
-            org_results, org_entries, previous = scoped._pull_conversations(
-                scoped.list_standalone(), out, force=force
-            )
-            results.update(org_results)
-            entries.update(org_entries)
+        with Progress() as progress:
+            for org_id in self._t.chat_capable_org_ids():
+                scoped = type(self)(self._t.scoped(org_id))
+                org_results, org_entries, previous = scoped._pull_conversations(
+                    scoped.list_standalone(),
+                    out,
+                    force=force,
+                    progress=progress,
+                    label=f"Pulling standalone conversations — org {org_id}",
+                )
+                results.update(org_results)
+                entries.update(org_entries)
 
         to_save = {**previous, **entries}
         if prune:

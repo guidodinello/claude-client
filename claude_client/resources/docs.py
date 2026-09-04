@@ -7,7 +7,7 @@ from pathlib import Path
 
 from curl_cffi import requests
 from logger import get_logger
-from rich.progress import track
+from rich.progress import Progress
 
 from .. import _manifest
 from .._transport import BASE_URL, Transport
@@ -136,6 +136,67 @@ class DocsResource:
 
     # ----------------------------------------------------------------- pull
 
+    def _pull_worker(
+        self,
+        project_id: str,
+        output_dir: str | Path,
+        *,
+        force: bool,
+        prune: bool,
+        progress: Progress,
+        label: str,
+    ) -> dict[str, str]:
+        """
+        Worker for `pull` — does the actual fetch/render/skip, into an already-open,
+        caller-owned `progress` (see `ProjectsResource.pull`/`pull_all`, which pass
+        their own `Progress` here to render one shared display per project pull).
+        """
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        previous = _manifest.load(out)
+        docs_meta = self.list(project_id)
+        filenames = _resolve_doc_filenames(docs_meta)
+
+        results: dict[str, str] = {}
+        # uuids confirmed present this run — used to detect deletions/renames. Kept
+        # separate from what gets saved: a uuid absent from the remote list entirely
+        # must NOT lose its manifest entry just because a non-prune run doesn't touch
+        # it, or a later --prune run would have nothing left to prune it with.
+        entries: dict[str, _manifest.ManifestEntry] = {}
+        task_id = progress.add_task(label, total=len(docs_meta))
+        for doc in docs_meta:
+            uuid = doc["uuid"]
+            name = filenames[uuid]
+            if "content" not in doc:
+                logger.warning("Doc %s has no content in list response, skipping", uuid)
+                if uuid in previous:
+                    entries[uuid] = previous[uuid]
+                if not (out / name).exists():
+                    results[name] = "content_missing"
+                progress.advance(task_id)
+                continue
+            content = doc["content"]
+            dest = out / name
+            existed = dest.exists()
+            if not force and existed and dest.read_text(encoding="utf-8") == content:
+                results[name] = "unchanged"
+            else:
+                dest.write_text(content, encoding="utf-8")
+                results[name] = "updated" if existed else "created"
+            entries[uuid] = _manifest.ManifestEntry(filename=name, updated_at="")
+            progress.advance(task_id)
+
+        to_save = {**previous, **entries}
+        if prune:
+            for uuid, filename in _manifest.prune_targets(previous, entries):
+                (out / filename).unlink(missing_ok=True)
+                results[filename] = "deleted"
+                to_save.pop(uuid, None)
+
+        _manifest.save(out, to_save)
+        return results
+
     def pull(
         self,
         project_id: str,
@@ -167,45 +228,12 @@ class DocsResource:
         "deleted", or "content_missing" (the doc's local file couldn't be verified or
         refreshed because the list response omitted its content).
         """
-        out = Path(output_dir)
-        out.mkdir(parents=True, exist_ok=True)
-
-        previous = _manifest.load(out)
-        docs_meta = self.list(project_id)
-        filenames = _resolve_doc_filenames(docs_meta)
-
-        results: dict[str, str] = {}
-        # uuids confirmed present this run — used to detect deletions/renames. Kept
-        # separate from what gets saved: a uuid absent from the remote list entirely
-        # must NOT lose its manifest entry just because a non-prune run doesn't touch
-        # it, or a later --prune run would have nothing left to prune it with.
-        entries: dict[str, _manifest.ManifestEntry] = {}
-        for doc in track(docs_meta, description="Pulling docs…"):
-            uuid = doc["uuid"]
-            name = filenames[uuid]
-            if "content" not in doc:
-                logger.warning("Doc %s has no content in list response, skipping", uuid)
-                if uuid in previous:
-                    entries[uuid] = previous[uuid]
-                if not (out / name).exists():
-                    results[name] = "content_missing"
-                continue
-            content = doc["content"]
-            dest = out / name
-            existed = dest.exists()
-            if not force and existed and dest.read_text(encoding="utf-8") == content:
-                results[name] = "unchanged"
-            else:
-                dest.write_text(content, encoding="utf-8")
-                results[name] = "updated" if existed else "created"
-            entries[uuid] = _manifest.ManifestEntry(filename=name, updated_at="")
-
-        to_save = {**previous, **entries}
-        if prune:
-            for uuid, filename in _manifest.prune_targets(previous, entries):
-                (out / filename).unlink(missing_ok=True)
-                results[filename] = "deleted"
-                to_save.pop(uuid, None)
-
-        _manifest.save(out, to_save)
-        return results
+        with Progress() as progress:
+            return self._pull_worker(
+                project_id,
+                output_dir,
+                force=force,
+                prune=prune,
+                progress=progress,
+                label="Pulling docs…",
+            )
