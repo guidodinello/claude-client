@@ -46,8 +46,10 @@ def test_client_single_org_account_skips_lookup(mock_req):
     # Only the one chat_capable_org_ids() call — no find_project_org scan.
     assert mock_req.get.call_count == 1
     assert client.org_id == ORG_ID
-    # org_id must be pinned from what we already fetched, not re-derived lazily —
-    # touching it here must not trigger a second /organizations round trip.
+    # org_id derives from the cached _org_ids list, already populated by the
+    # chat_capable_ids() call above — touching it here must not trigger a second
+    # /organizations round trip. The returned client is unpinned (no explicit
+    # org_id=); it works here only because there's exactly one chat-capable org.
     assert mock_req.get.call_count == 1
 
 

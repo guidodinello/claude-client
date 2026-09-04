@@ -12,7 +12,7 @@ from http import HTTPStatus
 from curl_cffi import requests
 from logger import get_logger
 
-from .exceptions import AuthError, CloudflareChallengeError
+from .exceptions import AmbiguousOrgError, AuthError, CloudflareChallengeError
 from .models import OrgDict
 
 logger = get_logger(__name__)
@@ -107,10 +107,7 @@ class Transport:
             raise ValueError("Session token required. Pass it or set CLAUDE_SESSION_TOKEN.")
         self._session_token = token
         self._cookie = f"sessionKey={token}"
-        if org_id is not None:
-            # Shadows the `org_id` cached_property: it's a non-data descriptor, so an
-            # entry in the instance __dict__ takes precedence over it.
-            self.__dict__["org_id"] = org_id
+        self._pinned_org_id = org_id
 
     # ------------------------------------------------------------------ auth
 
@@ -121,7 +118,10 @@ class Transport:
     def update_token(self, session_token: str) -> None:
         self._session_token = session_token
         self._cookie = f"sessionKey={session_token}"
-        self.__dict__.pop("org_id", None)
+        # An explicit pin (self._pinned_org_id) survives a token refresh — the caller
+        # said "this client is org X" regardless of which token is in use. Only the
+        # auto-resolved org list, which can legitimately change with a new token, is
+        # invalidated.
         self.__dict__.pop("_org_ids", None)
 
     def scoped(self, org_id: str) -> "Transport":
@@ -229,8 +229,25 @@ class Transport:
     def chat_capable_org_ids(self) -> list[str]:
         return list(self._org_ids)
 
-    @cached_property
+    @property
     def org_id(self) -> str:
+        """
+        The org this transport is scoped to.
+
+        Returns the explicit pin if one was given (`org_id=` at construction, or via
+        `scoped()`). Otherwise resolves from the account's chat-capable orgs — but only
+        when there is exactly one; on a multi-org account with no pin, which org to use
+        is ambiguous and this raises `AmbiguousOrgError` rather than silently guessing
+        the first one (see docs/bugs/org-scoping-resource-methods.md). Callers hitting
+        this should use `ClaudeClient.for_project(project_id)` or `.scoped(org_id)`.
+        """
+        if self._pinned_org_id is not None:
+            return self._pinned_org_id
         if not self._org_ids:
             raise ValueError("No org found with 'chat' or 'claude_pro' capabilities.")
+        if len(self._org_ids) > 1:
+            raise AmbiguousOrgError(
+                f"Account has {len(self._org_ids)} chat-capable orgs and no org is "
+                "pinned; use client.for_project(project_id) or client.scoped(org_id)."
+            )
         return self._org_ids[0]

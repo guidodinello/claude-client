@@ -17,12 +17,19 @@ _PAGE_LIMIT = 30
 
 
 class ConversationsResource:
-    """Conversations within a project."""
+    """
+    Conversations within a project.
+
+    Every method is scoped to the transport's org (`self._t.org_id`). On a multi-org
+    account with no pinned org, `org_id` raises `AmbiguousOrgError` — use
+    `ClaudeClient.for_project(project_id)` or `.scoped(org_id)` first.
+    """
 
     def __init__(self, transport: Transport) -> None:
         self._t = transport
 
     def _list_page(self, project_id: str, *, limit: int, offset: int) -> Page[ConversationDict]:
+        """Fetch one page of conversations. Scoped to the transport's org."""
         resp = self._t.get(
             f"{BASE_URL}/organizations/{self._t.org_id}/projects/{project_id}/conversations_v2"
             f"?limit={limit}&offset={offset}"
@@ -47,7 +54,9 @@ class ConversationsResource:
         Fetch a single conversation with full message content.
 
         Conversation ids are unique within an org, so this doesn't need a project id —
-        unlike `list`, which lists within one project's scope.
+        unlike `list`, which lists within one project's scope. Still scoped to the
+        transport's org, though: there's no project id here to resolve it from, so a
+        multi-org caller must pin the org up front (e.g. via `ClaudeClient.scoped`).
         """
         resp = self._t.get(
             f"{BASE_URL}/organizations/{self._t.org_id}/chat_conversations/{conversation_id}"

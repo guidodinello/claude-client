@@ -36,8 +36,7 @@ def _client(args: argparse.Namespace, project_id: str | None = None) -> ClaudeCl
     org_ids = client.orgs.chat_capable_ids()
     if len(org_ids) <= 1:
         return client
-    org_id = client.projects.find_org(project_id)
-    return client.scoped(org_id)
+    return client.for_project(project_id)
 
 
 def _parse_project_id(value: str) -> str:
