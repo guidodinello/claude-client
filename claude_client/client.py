@@ -7,7 +7,8 @@ Resource-namespaced, matching the shape of the official Anthropic SDK
     client.orgs             list orgs, chat-capable org ids
     client.projects         list/get/find/update, plus composite export/pull/pull_all
     client.docs             list/get/rm/push/pull within a project
-    client.conversations    list/get/pull within a project
+    client.conversations    list/get/pull within a project; list_standalone/pull_standalone
+                            for non-project chats, account-wide
     client.memory           read-only project + org memory
 
 Each resource holds a reference to the shared `Transport`, which owns the session
