@@ -1,6 +1,7 @@
 """Unit tests for ClaudeClient — HTTP layer mocked via unittest.mock."""
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1096,6 +1097,116 @@ def test_conversations_pull_fetch_failure_preserves_entry_for_later_prune(
     assert results["test-chat-conv-uui.md"] == "deleted"
 
 
+def _conv_meta(uuid: str, name: str = "Test Chat", updated_at: str = "2024-01-02") -> dict:
+    return {**CONVERSATION_META[0], "uuid": uuid, "name": name, "updated_at": updated_at}
+
+
+def _conv_detail(uuid: str, name: str = "Test Chat") -> dict:
+    return {**CONVERSATION_DETAIL, "uuid": uuid, "name": name}
+
+
+def _url_dispatch(page: dict, details_by_uuid: dict[str, dict], *, fail_uuids: Iterable[str] = ()):
+    """A `requests.get` side_effect keyed by URL, for tests fetching >1 conversation.
+
+    Positional side_effect lists can't be used once more than one conversation needs
+    fetching: concurrent fetches submit to the mock in submission order, not the
+    thread-completion order a positional list would implicitly assume.
+    """
+    fail_uuids = set(fail_uuids)
+
+    def dispatch(url, **_kwargs):
+        if url.endswith("/organizations"):
+            return _mock_response(ORGS_RESPONSE)
+        if "/conversations_v2" in url:
+            return _mock_response(page)
+        if "/chat_conversations/" in url:
+            uuid = url.split("/chat_conversations/")[1].split("?")[0]
+            if uuid in fail_uuids:
+                raise RequestException("boom")
+            return _mock_response(details_by_uuid[uuid])
+        raise AssertionError(f"unexpected URL in test: {url}")
+
+    return dispatch
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_fetches_multiple_conversations_all_succeed(mock_req, client, tmp_path):
+    uuids = [f"conv-{i}" for i in range(3)]
+    metas = [_conv_meta(u, name=f"Chat {u}") for u in uuids]
+    page = {
+        "data": metas,
+        "pagination": {"total": len(metas), "limit": 30, "offset": 0, "has_more": False},
+    }
+    details = {u: _conv_detail(u, name=f"Chat {u}") for u in uuids}
+    mock_req.get.side_effect = _url_dispatch(page, details)
+
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert len(results) == 3
+    for u in uuids:
+        filename = f"chat-{u}-{u[:8]}.md"
+        assert results[filename] == "created"
+        assert (tmp_path / filename).exists()
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_partial_failure_does_not_abort_others(mock_req, client, tmp_path):
+    uuids = [f"conv-{i}" for i in range(3)]
+    metas = [_conv_meta(u, name=f"Chat {u}") for u in uuids]
+    page = {
+        "data": metas,
+        "pagination": {"total": len(metas), "limit": 30, "offset": 0, "has_more": False},
+    }
+    details = {u: _conv_detail(u, name=f"Chat {u}") for u in uuids}
+    failing = uuids[1]
+    mock_req.get.side_effect = _url_dispatch(page, details, fail_uuids={failing})
+
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
+
+    for u in uuids:
+        filename = f"chat-{u}-{u[:8]}.md"
+        if u == failing:
+            assert filename not in results
+            assert not (tmp_path / filename).exists()
+        else:
+            assert results[filename] == "created"
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_parallelizes_fetches(mock_req, client, tmp_path):
+    import threading
+    import time
+
+    from claude_client.resources.conversations import _MAX_CONVERSATION_FETCH_WORKERS
+
+    uuids = [f"conv-{i}" for i in range(_MAX_CONVERSATION_FETCH_WORKERS * 2)]
+    metas = [_conv_meta(u, name=f"Chat {u}") for u in uuids]
+    page = {
+        "data": metas,
+        "pagination": {"total": len(metas), "limit": 30, "offset": 0, "has_more": False},
+    }
+    mock_req.get.side_effect = [_mock_response(ORGS_RESPONSE), _mock_response(page)]
+
+    lock = threading.Lock()
+    in_flight = 0
+    peak = 0
+
+    def fake_get(uuid):
+        nonlocal in_flight, peak
+        with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        time.sleep(0.05)
+        with lock:
+            in_flight -= 1
+        return _conv_detail(uuid, name=f"Chat {uuid}")
+
+    with patch.object(client.conversations, "get", side_effect=fake_get):
+        client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert 1 < peak <= _MAX_CONVERSATION_FETCH_WORKERS
+
+
 # ------------------------------------------------------------ conversations: standalone
 
 
@@ -1311,6 +1422,41 @@ def test_projects_pull_all_multi_org(mock_req, client, tmp_path):
     assert results == {"Project A": True, "Project B": True}
     assert (tmp_path / "project-a" / "project.md").exists()
     assert (tmp_path / "project-b" / "project.md").exists()
+
+
+@patch("claude_client.resources.projects.Progress")
+@patch("claude_client._transport.requests")
+def test_projects_pull_all_uses_one_shared_progress_with_per_project_labels(
+    mock_req, mock_progress_cls, client, tmp_path
+):
+    """Regression guard for the progress-bar-accumulation bug: `pull_all` must open
+    exactly one `Progress` for the whole run (not one per project/docs/conversations
+    call), and each project's tasks must be labeled with its name."""
+    project_a = {"uuid": "proj-a", "name": "Project A", "description": "", "prompt_template": ""}
+    project_b = {"uuid": "proj-b", "name": "Project B", "description": "", "prompt_template": ""}
+    empty_conv_page = {"data": [], "pagination": {"has_more": False}}
+
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([project_a, project_b]),
+        _mock_response(project_a),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+        _mock_response(project_b),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+    ]
+    mock_progress = mock_progress_cls.return_value.__enter__.return_value
+
+    client.projects.pull_all(tmp_path)
+
+    # One Progress context for the entire run — not one per project.
+    mock_progress_cls.assert_called_once()
+    labels = [call.args[0] for call in mock_progress.add_task.call_args_list]
+    assert any("Project A" in label for label in labels)
+    assert any("Project B" in label for label in labels)
 
 
 @patch("claude_client._transport.requests")

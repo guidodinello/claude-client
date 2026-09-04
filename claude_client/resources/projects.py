@@ -220,6 +220,57 @@ class ProjectsResource:
             data = self.export_data(project_id)
         return render_project(data)
 
+    def _pull_worker(
+        self,
+        project_id: str,
+        output_dir: str | Path,
+        *,
+        force: bool,
+        prune: bool,
+        progress: Progress,
+        label: str | None = None,
+    ) -> ProjectSyncResult:
+        """
+        Worker for `pull` — pulls into an already-open, caller-owned `progress` (see
+        `pull_all`, which passes its own `Progress` here so every project's docs/
+        conversations tasks render in one shared display instead of each project
+        opening its own).
+        """
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        project = self.get(project_id)
+        label = label or project.get("name", project_id)
+        memory_data = self._memory.get(project_id)
+        meta = ProjectExport(
+            uuid=project_id,
+            name=project.get("name", ""),
+            description=project.get("description", ""),
+            instructions=project.get("prompt_template", ""),
+            memory=memory_data.get("memory", ""),
+            controls=memory_data.get("controls", []),
+        )
+        (out / "project.md").write_text(render_project_metadata(meta), encoding="utf-8")
+
+        docs_results = self._docs._pull_worker(
+            project_id,
+            out / "docs",
+            force=force,
+            prune=prune,
+            progress=progress,
+            label=f"{label} — docs",
+        )
+        conversations_results = self._conversations._pull_into(
+            project_id,
+            out / "conversations",
+            force=force,
+            prune=prune,
+            progress=progress,
+            label=f"{label} — conversations",
+        )
+
+        return ProjectSyncResult(path=out, docs=docs_results, conversations=conversations_results)
+
     def pull(
         self,
         project_id: str,
@@ -238,27 +289,10 @@ class ProjectsResource:
         prune=True to delete local docs/conversations removed on the web.
         Returns the output directory path plus a per-file status for docs/conversations.
         """
-        out = Path(output_dir)
-        out.mkdir(parents=True, exist_ok=True)
-
-        project = self.get(project_id)
-        memory_data = self._memory.get(project_id)
-        meta = ProjectExport(
-            uuid=project_id,
-            name=project.get("name", ""),
-            description=project.get("description", ""),
-            instructions=project.get("prompt_template", ""),
-            memory=memory_data.get("memory", ""),
-            controls=memory_data.get("controls", []),
-        )
-        (out / "project.md").write_text(render_project_metadata(meta), encoding="utf-8")
-
-        docs_results = self._docs.pull(project_id, out / "docs", force=force, prune=prune)
-        conversations_results = self._conversations.pull(
-            project_id, out / "conversations", force=force, prune=prune
-        )
-
-        return ProjectSyncResult(path=out, docs=docs_results, conversations=conversations_results)
+        with Progress() as progress:
+            return self._pull_worker(
+                project_id, output_dir, force=force, prune=prune, progress=progress
+            )
 
     def pull_all(
         self, out_dir: str | Path, *, force: bool = False, prune: bool = False
@@ -289,23 +323,33 @@ class ProjectsResource:
         # uuids confirmed present this run — see docs.py::pull for why this is kept
         # separate from what gets saved.
         entries: dict[str, _manifest.ManifestEntry] = {}
-        for org_id, project in projects:
-            resource = scoped.setdefault(org_id, self._scoped(org_id))
-            uuid = project["uuid"]
-            name = project.get("name", uuid)
-            slug = slugs[uuid]
-            try:
-                resource.pull(uuid, out_root / slug, force=force, prune=prune)
-                results[name] = True
-                entries[uuid] = _manifest.ManifestEntry(filename=slug, updated_at="")
-            except requests.exceptions.RequestException:
-                logger.warning("Failed to pull project '%s', skipping", name)
-                results[name] = False
-                # Keep tracking this uuid's directory even on a first-ever failure (its
-                # dir was already created by `pull`'s mkdir), so a later prune run can
-                # still remove it if the project turns out to be gone for good.
-                fallback = _manifest.ManifestEntry(filename=slug, updated_at="")
-                entries[uuid] = previous.get(uuid, fallback)
+        with Progress() as progress:
+            overall = progress.add_task("Pulling projects", total=len(projects))
+            for org_id, project in projects:
+                resource = scoped.setdefault(org_id, self._scoped(org_id))
+                uuid = project["uuid"]
+                name = project.get("name", uuid)
+                slug = slugs[uuid]
+                try:
+                    resource._pull_worker(
+                        uuid,
+                        out_root / slug,
+                        force=force,
+                        prune=prune,
+                        progress=progress,
+                        label=name,
+                    )
+                    results[name] = True
+                    entries[uuid] = _manifest.ManifestEntry(filename=slug, updated_at="")
+                except requests.exceptions.RequestException:
+                    logger.warning("Failed to pull project '%s', skipping", name)
+                    results[name] = False
+                    # Keep tracking this uuid's directory even on a first-ever failure (its
+                    # dir was already created by `pull`'s mkdir), so a later prune run can
+                    # still remove it if the project turns out to be gone for good.
+                    fallback = _manifest.ManifestEntry(filename=slug, updated_at="")
+                    entries[uuid] = previous.get(uuid, fallback)
+                progress.advance(overall)
 
         to_save = {**previous, **entries}
         if prune:
