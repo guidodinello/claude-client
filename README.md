@@ -101,6 +101,12 @@ client = ClaudeClient()  # reads CLAUDE_SESSION_TOKEN from env
 
 # Projects — list() spans every chat-capable org by default, returning (org_id, project) pairs
 projects = client.projects.list()
+
+# On a multi-org account, every other project-scoped call below needs a pinned org —
+# calling them straight off an unpinned multi-org client raises AmbiguousOrgError
+# rather than silently guessing which org the project lives in. Resolve it once:
+client = client.for_project(project_id)  # or client.scoped(org_id) if already known
+
 project = client.projects.get(project_id)
 client.projects.update(project_id, description="New description")
 

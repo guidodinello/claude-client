@@ -1,5 +1,11 @@
 from .client import ClaudeClient
-from .exceptions import AuthError, CloudflareChallengeError, NotFoundError, UploadError
+from .exceptions import (
+    AmbiguousOrgError,
+    AuthError,
+    CloudflareChallengeError,
+    NotFoundError,
+    UploadError,
+)
 from .migrate import migrate_project
 from .models import (
     ChatMessageDict,
@@ -16,6 +22,7 @@ from .models import (
 
 __all__ = [
     "ClaudeClient",
+    "AmbiguousOrgError",
     "AuthError",
     "CloudflareChallengeError",
     "NotFoundError",

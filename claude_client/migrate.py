@@ -28,6 +28,11 @@ def migrate_project(
 
     Uses upsert semantics throughout, so re-running is safe and won't duplicate docs.
     Returns a summary count per category.
+
+    Does no org scoping of its own — `source` and `dest` must already be pinned to
+    the org that owns their respective project (e.g. via `ClaudeClient.for_project`
+    or `.scoped`). On a multi-org account, passing unpinned clients raises
+    `AmbiguousOrgError` from the first project-scoped call.
     """
     project = source.projects.get(source_project_id)
     description = project.get("description") or None

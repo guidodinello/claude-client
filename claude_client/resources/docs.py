@@ -47,23 +47,31 @@ def _resolve_doc_filenames(docs: Sequence[DocDict]) -> dict[str, str]:
 
 
 class DocsResource:
-    """Knowledge docs within a project."""
+    """
+    Knowledge docs within a project.
+
+    Every method is scoped to the transport's org (`self._t.org_id`). On a multi-org
+    account with no pinned org, `org_id` raises `AmbiguousOrgError` — use
+    `ClaudeClient.for_project(project_id)` or `.scoped(org_id)` first.
+    """
 
     def __init__(self, transport: Transport) -> None:
         self._t = transport
 
     def list(self, project_id: str) -> list[DocDict]:
+        """List a project's docs. Scoped to the transport's org — see class docstring."""
         resp = self._t.get(f"{BASE_URL}/organizations/{self._t.org_id}/projects/{project_id}/docs")
         return resp.json()
 
     def get(self, project_id: str, doc_id: str) -> DocDict:
-        """Fetch a single doc with its full content."""
+        """Fetch a single doc with its full content. Scoped to the transport's org."""
         resp = self._t.get(
             f"{BASE_URL}/organizations/{self._t.org_id}/projects/{project_id}/docs/{doc_id}"
         )
         return resp.json()
 
     def rm(self, project_id: str, doc_id: str) -> None:
+        """Delete a single doc. Scoped to the transport's org."""
         self._t.delete(
             f"{BASE_URL}/organizations/{self._t.org_id}/projects/{project_id}/docs/{doc_id}"
         )
@@ -119,6 +127,7 @@ class DocsResource:
         return results
 
     def _create(self, project_id: str, content: str, file_name: str) -> DocDict:
+        """Create a new doc. Scoped to the transport's org."""
         url = f"{BASE_URL}/organizations/{self._t.org_id}/projects/{project_id}/docs"
         resp = self._t.post(url, {"file_name": file_name, "content": content})
         if resp.status_code != HTTPStatus.CREATED:

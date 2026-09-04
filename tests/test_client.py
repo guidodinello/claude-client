@@ -8,6 +8,7 @@ import pytest
 from curl_cffi.requests.exceptions import RequestException
 
 from claude_client import (
+    AmbiguousOrgError,
     AuthError,
     ClaudeClient,
     CloudflareChallengeError,
@@ -18,11 +19,16 @@ from claude_client._manifest import MANIFEST_NAME
 from claude_client.render import conversation_to_markdown, slugify
 
 ORG_ID = "org-uuid"
+OTHER_ORG_ID = "other-org-uuid"
 PROJECT_ID = "proj-uuid"
 DOC_UUID = "doc-uuid"
 TOKEN = "sk-ant-sid01-test"
 
 ORGS_RESPONSE = [{"uuid": ORG_ID, "capabilities": ["chat"], "name": "Test Org"}]
+MULTI_ORGS_RESPONSE = [
+    *ORGS_RESPONSE,
+    {"uuid": OTHER_ORG_ID, "capabilities": ["chat"], "name": "Other Org"},
+]
 PROJECTS_RESPONSE = [
     {"uuid": PROJECT_ID, "name": "My Project", "description": "", "prompt_template": ""}
 ]
@@ -75,9 +81,98 @@ def test_org_id_and_chat_capable_ids_share_one_fetch(mock_req, client):
     assert mock_req.get.call_count == 1
 
 
-def test_org_id_override_shadows_cached_property():
+def test_org_id_explicit_pin_wins():
     client = ClaudeClient(TOKEN, org_id="explicit-org")
     assert client.org_id == "explicit-org"
+
+
+@patch("claude_client._transport.requests")
+def test_org_id_raises_ambiguous_on_multi_org_unpinned_account(mock_req, client):
+    """The bug itself: an unpinned client on a multi-org account must not silently
+    guess an org — it must refuse rather than send a request to the wrong one."""
+    mock_req.get.return_value = _mock_response(MULTI_ORGS_RESPONSE)
+    with pytest.raises(AmbiguousOrgError):
+        _ = client.org_id
+
+
+@patch("claude_client._transport.requests")
+def test_docs_list_raises_ambiguous_on_multi_org_unpinned_account(mock_req, client):
+    """Same bug, exercised through a real resource method rather than the bare property."""
+    mock_req.get.return_value = _mock_response(MULTI_ORGS_RESPONSE)
+    with pytest.raises(AmbiguousOrgError):
+        client.docs.list(PROJECT_ID)
+
+
+@patch("claude_client._transport.requests")
+def test_for_project_resolves_and_pins_the_owning_org(mock_req, client):
+    """client.for_project(project_id) is the one-call fix: it must target the org
+    that actually owns the project, not whichever org is listed first."""
+    mock_req.get.side_effect = [
+        _mock_response(MULTI_ORGS_RESPONSE),  # find_org -> list_organizations()
+        _mock_response([]),  # projects in first org — not found here
+        _mock_response(PROJECTS_RESPONSE),  # projects in second org — found
+        _mock_response([DOC_FULL]),  # docs.list(), now scoped to the second org
+    ]
+
+    scoped = client.for_project(PROJECT_ID)
+    assert scoped.org_id == OTHER_ORG_ID
+
+    docs = scoped.docs.list(PROJECT_ID)
+
+    assert docs == [DOC_FULL]
+    # The docs.list() request must have gone to the *second* org, not the first —
+    # asserted against the exact expected URL rather than substring containment,
+    # since OTHER_ORG_ID ("other-org-uuid") contains ORG_ID ("org-uuid") as a substring.
+    requested_url = mock_req.get.call_args.args[0]
+    assert requested_url == (
+        f"https://claude.ai/api/organizations/{OTHER_ORG_ID}/projects/{PROJECT_ID}/docs"
+    )
+
+
+@patch("claude_client._transport.requests")
+def test_org_id_resolves_normally_on_single_org_account(mock_req, client):
+    """Regression guard: single-org accounts (every other test in this module) must
+    keep working exactly as before — no raise, no behavior change."""
+    mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
+    assert client.org_id == ORG_ID
+
+
+@patch("claude_client._transport.requests")
+def test_org_id_raises_value_error_when_no_chat_capable_org(mock_req, client):
+    mock_req.get.return_value = _mock_response([])
+    with pytest.raises(ValueError):
+        _ = client.org_id
+
+
+@patch("claude_client._transport.requests")
+def test_explicit_pin_survives_update_token(mock_req):
+    """A caller who pinned an org meant it regardless of which token is in use —
+    update_token() must not silently revert a multi-org client to the buggy,
+    auto-resolved path (which would now raise AmbiguousOrgError)."""
+    client = ClaudeClient(TOKEN, org_id=OTHER_ORG_ID)
+    client.update_token("sk-ant-sid01-new-test")
+
+    assert client.org_id == OTHER_ORG_ID
+    mock_req.get.assert_not_called()  # pinned — never needed to list orgs at all
+
+
+@patch("claude_client._transport.requests")
+def test_update_token_still_invalidates_auto_resolved_org_cache(mock_req, client):
+    """The auto-resolved org list (unlike an explicit pin) legitimately depends on
+    the token — update_token() must still drop it, or a token swap to an account
+    with different org membership would keep serving the stale, previous org list."""
+    mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
+    assert client.org_id == ORG_ID
+    assert mock_req.get.call_count == 1
+
+    client.update_token("sk-ant-sid01-new-test")
+    mock_req.get.return_value = _mock_response(MULTI_ORGS_RESPONSE)
+
+    # New token's account has two chat-capable orgs — this can only be seen if the
+    # cached single-org list was actually dropped, not reused, by update_token().
+    with pytest.raises(AmbiguousOrgError):
+        _ = client.org_id
+    assert mock_req.get.call_count == 2  # re-fetched /organizations, cache was dropped
 
 
 @patch("claude_client._transport.requests")
@@ -1003,6 +1098,16 @@ def test_conversations_pull_fetch_failure_preserves_entry_for_later_prune(
 
 # --------------------------------------------------------------------- projects
 # (composite: pull / pull_all, which pull docs + conversations + memory together)
+
+
+@patch("claude_client._transport.requests")
+def test_projects_pull_raises_ambiguous_on_multi_org_unpinned_account(mock_req, client, tmp_path):
+    """The composite path (pull/export/export_data, all built on projects.get) is
+    scoped the same way as the direct resource methods — an unpinned multi-org
+    client must refuse rather than pull the wrong org's project."""
+    mock_req.get.return_value = _mock_response(MULTI_ORGS_RESPONSE)
+    with pytest.raises(AmbiguousOrgError):
+        client.projects.pull(PROJECT_ID, tmp_path / "export")
 
 
 @patch("claude_client._transport.requests")

@@ -17,3 +17,7 @@ class UploadError(Exception):
 
 class NotFoundError(Exception):
     """Raised when a requested resource is not found."""
+
+
+class AmbiguousOrgError(Exception):
+    """Raised when an org-scoped call is made on a multi-org account with no pinned org."""

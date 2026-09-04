@@ -62,6 +62,13 @@ class ProjectsResource:
     """
     Projects, plus the composite operations that pull a project's docs,
     conversations, and memory together (export/pull/pull_all).
+
+    `list`, `find`, and `find_org` span every chat-capable org and are unaffected by
+    org pinning. `get` and `update`, plus the composite `export`/`export_data`/`pull`,
+    are scoped to the transport's org (`self._t.org_id`) — on a multi-org account with
+    no pinned org, that raises `AmbiguousOrgError`; use `ClaudeClient.for_project(project_id)`
+    or `.scoped(org_id)` first. `pull_all` is unaffected: it resolves each project's own
+    org internally via `_scoped()` before pulling it.
     """
 
     def __init__(
@@ -96,6 +103,7 @@ class ProjectsResource:
         return results
 
     def get(self, project_id: str) -> ProjectDict:
+        """Fetch a project's metadata. Scoped to the transport's org — see class docstring."""
         resp = self._t.get(f"{BASE_URL}/organizations/{self._t.org_id}/projects/{project_id}")
         return resp.json()
 
@@ -143,7 +151,7 @@ class ProjectsResource:
         description: str | None = None,
         instructions: str | None = None,
     ) -> ProjectDict:
-        """Update project metadata. Only provided fields are sent."""
+        """Update project metadata. Only provided fields are sent. Scoped to the transport's org."""
         payload: dict[str, str] = {}
         if name is not None:
             payload["name"] = name

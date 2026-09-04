@@ -42,3 +42,17 @@ class ClaudeClient:
     def scoped(self, org_id: str) -> "ClaudeClient":
         """A client sharing this account's token but pinned to a specific org."""
         return ClaudeClient(self._transport.session_token, org_id=org_id)
+
+    def for_project(self, project_id: str) -> "ClaudeClient":
+        """
+        A client pinned to the org that owns project_id.
+
+        On a multi-org account, every project-scoped resource method (docs, conversations,
+        memory, projects.get/update) requires a pinned org — `org_id` raises
+        `AmbiguousOrgError` otherwise. This is the one-call fix: it looks up the owning
+        org via `projects.find_org()` (one round trip, walks every org on the account,
+        not just chat-capable ones — broader is safer for a lookup) and returns a client
+        scoped to it. Safe to call on an unpinned client since `find_org` never touches
+        `org_id` itself.
+        """
+        return self.scoped(self.projects.find_org(project_id))
