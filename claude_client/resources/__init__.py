@@ -3,6 +3,7 @@ from .docs import DocsResource
 from .memory import MemoryResource
 from .orgs import OrgsResource
 from .projects import ProjectsResource
+from .scheduled_tasks import ScheduledTasksResource
 
 __all__ = [
     "ConversationsResource",
@@ -10,4 +11,5 @@ __all__ = [
     "MemoryResource",
     "OrgsResource",
     "ProjectsResource",
+    "ScheduledTasksResource",
 ]
