@@ -123,6 +123,15 @@ def _project_migrate(args: argparse.Namespace) -> None:
     )
 
 
+# -------------------------------------------------------------- scheduled task
+
+
+def _scheduled_task_run(args: argparse.Namespace) -> None:
+    client = _client(args)
+    client.scheduled_tasks.run(args.task_id)
+    print(f"Triggered scheduled task {args.task_id}")
+
+
 # ---------------------------------------------------------------------- docs
 
 
@@ -293,6 +302,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pr_migrate.add_argument("--no-memory", action="store_true", help="Skip migrating memory")
     pr_migrate.set_defaults(func=_project_migrate)
+
+    # ---- scheduled-task ----
+    scheduled_task = sub.add_parser(
+        "scheduled-task", help="Claude Projects/Cowork scheduled task operations"
+    )
+    stsub = scheduled_task.add_subparsers(dest="action", metavar="<action>")
+    stsub.required = True
+
+    st_run = stsub.add_parser("run", help="Run a scheduled task immediately")
+    st_run.add_argument("task_id", help="trig_... id from claude.ai/scheduled-task/trig_...")
+    st_run.set_defaults(func=_scheduled_task_run)
 
     # ---- docs ----
     docs = sub.add_parser("docs", help="Knowledge doc operations")

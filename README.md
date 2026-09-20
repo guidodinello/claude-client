@@ -12,7 +12,8 @@ Python client for the Claude.ai web API — manage projects, sync files, and exp
 - Export a full project to a single Markdown file (title, description, instructions, memory, docs, conversations)
 - Pull a full project to a local directory (project.md, docs/, conversations/) — incremental by default, `--force` to always rewrite, `--prune` to delete local files/dirs removed on the web
 - Migrate a project's docs, conversations, and memory to another project — even across accounts/orgs
-- Resource-namespaced Python client (`client.projects`, `client.docs`, `client.conversations`, `client.memory`, `client.orgs`) and matching CLI
+- Run a Projects/Cowork scheduled task on demand (the "Ejecutar ahora" button)
+- Resource-namespaced Python client (`client.projects`, `client.docs`, `client.conversations`, `client.memory`, `client.orgs`, `client.scheduled_tasks`) and matching CLI
 
 ## Installation
 
@@ -91,6 +92,10 @@ claude-client account pull ./all-projects/
 
 # Pull every standalone (non-project) conversation across every chat-capable org
 claude-client account pull-conversations ./standalone-convos/
+
+# Run a Projects/Cowork scheduled task immediately (not a Claude Code Routine —
+# see the note in Python usage below)
+claude-client scheduled-task run <task-id>
 ```
 
 ## Python usage
@@ -146,6 +151,12 @@ client.projects.pull(project_id, "./my-project/")  # project.md, docs/, conversa
 client.projects.pull(project_id, "./my-project/", prune=True)
 client.projects.pull_all("./all-projects/")  # every project, every org
 client.projects.pull_all("./all-projects/", prune=True)  # also remove deleted projects' dirs
+
+# Scheduled tasks (Claude Projects/Cowork "Programadas" tab, id from
+# claude.ai/scheduled-task/trig_...) — NOT Claude Code Routines, a separate product
+# with its own /claude_code/routines/{id}/fire API. Scoped to the transport's org,
+# not to a project — a task id is unique account-wide.
+client.scheduled_tasks.run(task_id)
 
 # Migrate a project's docs/conversations/memory to another project, possibly
 # across accounts and orgs (two separate clients, one per account)
