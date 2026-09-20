@@ -141,8 +141,8 @@ class ConversationsResource:
                 prior = previous.get(uuid)
                 try:
                     conv = future.result()
-                except requests.exceptions.RequestException:
-                    logger.warning("Failed to fetch conversation %s, skipping", uuid)
+                except requests.exceptions.RequestException as exc:
+                    logger.warning("Failed to fetch conversation %s, skipping: %s", uuid, exc)
                     if prior is not None:
                         entries[uuid] = prior
                     progress.advance(task_id)

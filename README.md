@@ -152,6 +152,12 @@ client.projects.pull(project_id, "./my-project/", prune=True)
 client.projects.pull_all("./all-projects/")  # every project, every org
 client.projects.pull_all("./all-projects/", prune=True)  # also remove deleted projects' dirs
 
+# pull_all returns dict[str, ProjectPullResult]: truthy on success, and .error holds
+# the exception on failure so callers can implement their own per-project retry/backoff
+# instead of the library absorbing per-project failures.
+results = client.projects.pull_all("./all-projects/")
+failed = {name: result.error for name, result in results.items() if not result}
+
 # Scheduled tasks (Claude Projects/Cowork "Programadas" tab, id from
 # claude.ai/scheduled-task/trig_...) — NOT Claude Code Routines, a separate product
 # with its own /claude_code/routines/{id}/fire API. Scoped to the transport's org,

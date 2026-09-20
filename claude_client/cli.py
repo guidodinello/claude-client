@@ -186,9 +186,12 @@ def _docs_pull(args: argparse.Namespace) -> None:
 def _account_pull(args: argparse.Namespace) -> None:
     client = _client(args)
     results = client.projects.pull_all(args.output_dir, force=args.force, prune=args.prune)
-    for name, ok in results.items():
-        print(f"  [{'ok' if ok else 'FAILED'}] {name}")
-    succeeded = sum(ok for ok in results.values())
+    for name, result in results.items():
+        if result:
+            print(f"  [ok] {name}")
+        else:
+            print(f"  [FAILED] {name}: {result.error}")
+    succeeded = sum(result.ok for result in results.values())
     print(f"Pulled {succeeded}/{len(results)} project(s) to {args.output_dir}/")
 
 

@@ -1469,7 +1469,8 @@ def test_projects_pull_all_multi_org(mock_req, client, tmp_path):
 
     results = client.projects.pull_all(tmp_path)
 
-    assert results == {"Project A": True, "Project B": True}
+    assert results["Project A"].ok is True
+    assert results["Project B"].ok is True
     assert (tmp_path / "project-a" / "project.md").exists()
     assert (tmp_path / "project-b" / "project.md").exists()
 
@@ -1527,11 +1528,40 @@ def test_projects_pull_all_one_failure_does_not_abort_others(mock_req, client, t
 
     results = client.projects.pull_all(tmp_path)
 
-    assert results == {"Project A": False, "Project B": True}
+    assert results["Project A"].ok is False
+    assert isinstance(results["Project A"].error, RequestException)
+    assert results["Project B"].ok is True
+    assert results["Project B"].error is None
     assert (tmp_path / "project-b" / "project.md").exists()
     # pull() creates the output dir before its first API call, so project-a's dir may
     # exist, but it must be empty — the failure happened before anything was written.
     assert not (tmp_path / "project-a" / "project.md").exists()
+
+
+@patch("claude_client._transport.requests")
+def test_projects_pull_all_surfaces_exception_per_project(mock_req, client, tmp_path):
+    """The exact exception instance raised for a failed project must reach the
+    caller through `ProjectPullResult.error`, so a caller's own retry/backoff wrapper
+    can inspect it (e.g. distinguish a timeout from a 4xx/5xx/auth failure)."""
+    project_a = {"uuid": "proj-a", "name": "Project A", "description": "", "prompt_template": ""}
+    project_b = {"uuid": "proj-b", "name": "Project B", "description": "", "prompt_template": ""}
+    empty_conv_page = {"data": [], "pagination": {"has_more": False}}
+    boom = RequestException("boom")
+
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([project_a, project_b]),
+        boom,  # pull proj-a: get_project raises
+        _mock_response(project_b),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([]),
+        _mock_response(empty_conv_page),
+    ]
+
+    results = client.projects.pull_all(tmp_path)
+
+    assert results["Project A"].error is boom
+    assert results["Project B"].error is None
 
 
 @patch("claude_client._transport.requests")
@@ -1566,7 +1596,7 @@ def test_projects_pull_all_prune_removes_deleted_project_dir(mock_req, client, t
     ]
     results = client.projects.pull_all(tmp_path, prune=True)
 
-    assert results == {"Project B": True}
+    assert results["Project B"].ok is True
     assert not (tmp_path / "project-a").exists()
     assert (tmp_path / "project-b").exists()
 
@@ -1602,7 +1632,8 @@ def test_projects_pull_all_does_not_prune_dir_of_failed_project(mock_req, client
     ]
     results = client.projects.pull_all(tmp_path, prune=True)
 
-    assert results == {"Project A": False, "Project B": True}
+    assert results["Project A"].ok is False
+    assert results["Project B"].ok is True
     assert (tmp_path / "project-a").exists()  # never pruned despite prune=True
 
 
@@ -1619,7 +1650,7 @@ def test_projects_pull_all_tracks_project_on_first_ever_pull_failure(mock_req, c
         RequestException("boom"),  # first-ever pull of proj-a fails
     ]
     results = client.projects.pull_all(tmp_path)
-    assert results == {"Project A": False}
+    assert results["Project A"].ok is False
 
     # Project A is now genuinely gone from the web.
     mock_req.get.side_effect = [_mock_response([])]

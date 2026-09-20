@@ -33,12 +33,13 @@ def load(directory: Path) -> dict[str, ManifestEntry]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         return {uuid: ManifestEntry(**entry) for uuid, entry in raw.items()}
-    except (json.JSONDecodeError, TypeError, KeyError):
+    except (json.JSONDecodeError, TypeError, KeyError) as exc:
         backup = path.with_name(path.name + ".corrupt")
         path.replace(backup)
         logger.error(
-            "Corrupt pull manifest, backed up to %s and starting fresh (loses incremental"
-            " pull/prune tracking for this directory until the next full pull)",
+            "Corrupt pull manifest (%s), backed up to %s and starting fresh (loses"
+            " incremental pull/prune tracking for this directory until the next full pull)",
+            exc,
             backup,
         )
         return {}
