@@ -112,3 +112,19 @@ class ProjectSyncResult:
     path: Path
     docs: dict[str, str]
     conversations: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectPullResult:
+    """Outcome of one project's pull inside `ProjectsResource.pull_all`.
+
+    Truthy when the pull succeeded, so callers that treat the mapping's values as
+    booleans keep working; `error` carries the exception so callers can make their own
+    retry/backoff decision per project instead of the library absorbing it.
+    """
+
+    ok: bool
+    error: Exception | None = None
+
+    def __bool__(self) -> bool:
+        return self.ok

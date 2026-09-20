@@ -54,9 +54,11 @@ def migrate_project(
         for conv_meta in track(convs, description="Migrating conversations…"):
             try:
                 conv = source.conversations.get(conv_meta["uuid"])
-            except requests.exceptions.RequestException:
+            except requests.exceptions.RequestException as exc:
                 logger.warning(
-                    "Failed to fetch conversation %s, skipping", conv_meta.get("uuid", "unknown")
+                    "Failed to fetch conversation %s, skipping: %s",
+                    conv_meta.get("uuid", "unknown"),
+                    exc,
                 )
                 continue
             content = conversation_to_markdown(conv)

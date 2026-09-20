@@ -10,7 +10,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from .. import _manifest
 from .._transport import BASE_URL, Transport
 from ..exceptions import NotFoundError
-from ..models import ProjectDict, ProjectExport, ProjectSyncResult
+from ..models import ProjectDict, ProjectExport, ProjectPullResult, ProjectSyncResult
 from ..render import render_project, render_project_metadata, slugify
 from .conversations import ConversationsResource
 from .docs import DocsResource
@@ -185,10 +185,11 @@ class ProjectsResource:
         for conv in self._conversations.list(project_id):
             try:
                 conversations.append(self._conversations.get(conv["uuid"]))
-            except requests.exceptions.RequestException:
+            except requests.exceptions.RequestException as exc:
                 logger.warning(
-                    "Failed to fetch conversation %s for export, skipping",
+                    "Failed to fetch conversation %s for export, skipping: %s",
                     conv.get("uuid", "unknown"),
+                    exc,
                 )
 
         return ProjectExport(
@@ -287,14 +288,18 @@ class ProjectsResource:
 
     def pull_all(
         self, out_dir: str | Path, *, force: bool = False, prune: bool = False
-    ) -> dict[str, bool]:
+    ) -> dict[str, ProjectPullResult]:
         """
         Pull every project across every chat-capable org on this account.
 
         Writes {out_dir}/{project_slug}/{project.md,docs/,conversations/} per project
         (see `pull`). Encapsulates the multi-org scoping so callers don't need their
-        own org-to-transport bookkeeping. Returns a map of project name -> success; one
-        project failing is logged and skipped, never aborts the rest.
+        own org-to-transport bookkeeping. Returns a map of project name ->
+        `ProjectPullResult`; one project failing is logged and skipped, never aborts
+        the rest. `ProjectPullResult` is truthy on success (so `if results[name]:`
+        keeps working) and carries the exception on failure via `.error`, letting
+        callers implement their own per-project retry/backoff instead of the library
+        absorbing the failure.
 
         Pass prune=True to also delete per-project docs/conversations removed on the
         web (via `pull`) and to remove local project directories for projects deleted
@@ -310,7 +315,7 @@ class ProjectsResource:
         slugs = _resolve_project_slugs(projects, previous)
 
         scoped: dict[str, ProjectsResource] = {}
-        results: dict[str, bool] = {}
+        results: dict[str, ProjectPullResult] = {}
         # uuids confirmed present this run — see docs.py::pull for why this is kept
         # separate from what gets saved.
         entries: dict[str, _manifest.ManifestEntry] = {}
@@ -330,11 +335,12 @@ class ProjectsResource:
                         progress=progress,
                         label=name,
                     )
-                    results[name] = True
+                    results[name] = ProjectPullResult(ok=True)
                     entries[uuid] = _manifest.ManifestEntry(filename=slug, updated_at="")
-                except requests.exceptions.RequestException:
-                    logger.warning("Failed to pull project '%s', skipping", name)
-                    results[name] = False
+                except requests.exceptions.RequestException as exc:
+                    logger.warning("Failed to pull project '%s', skipping: %s", name, exc)
+                    logger.debug("Project '%s' pull failure detail", name, exc_info=exc)
+                    results[name] = ProjectPullResult(ok=False, error=exc)
                     # Keep tracking this uuid's directory even on a first-ever failure (its
                     # dir was already created by `pull`'s mkdir), so a later prune run can
                     # still remove it if the project turns out to be gone for good.

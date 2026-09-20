@@ -17,6 +17,7 @@ from .models import (
     Page,
     ProjectDict,
     ProjectExport,
+    ProjectPullResult,
     ProjectSyncResult,
 )
 
@@ -37,5 +38,6 @@ __all__ = [
     "Page",
     "ProjectDict",
     "ProjectExport",
+    "ProjectPullResult",
     "ProjectSyncResult",
 ]
