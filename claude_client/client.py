@@ -10,13 +10,20 @@ Resource-namespaced, matching the shape of the official Anthropic SDK
     client.conversations    list/get/pull within a project; list_standalone/pull_standalone
                             for non-project chats, account-wide
     client.memory           read-only project + org memory
+    client.scheduled_tasks  run a Projects/Cowork scheduled task immediately
 
 Each resource holds a reference to the shared `Transport`, which owns the session
 token, headers, raw HTTP verbs, and org resolution. See `_transport.py`.
 """
 
 from ._transport import Transport
-from .resources import ConversationsResource, DocsResource, MemoryResource, OrgsResource
+from .resources import (
+    ConversationsResource,
+    DocsResource,
+    MemoryResource,
+    OrgsResource,
+    ScheduledTasksResource,
+)
 from .resources.projects import ProjectsResource
 
 
@@ -29,6 +36,7 @@ class ClaudeClient:
         self.docs = DocsResource(self._transport)
         self.conversations = ConversationsResource(self._transport)
         self.memory = MemoryResource(self._transport)
+        self.scheduled_tasks = ScheduledTasksResource(self._transport)
         self.projects = ProjectsResource(
             self._transport, docs=self.docs, conversations=self.conversations, memory=self.memory
         )

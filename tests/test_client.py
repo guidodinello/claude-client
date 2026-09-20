@@ -446,6 +446,36 @@ def test_projects_update(mock_req, client):
     assert payload == {"prompt_template": "New instructions."}
 
 
+# --------------------------------------------------------------- scheduled tasks
+
+TASK_ID = "trig_01U9nqQru9TJTfYhYPqX1NDb"
+
+
+@patch("claude_client._transport.requests")
+def test_scheduled_tasks_run(mock_req, client):
+    mock_req.get.return_value = _mock_response(ORGS_RESPONSE)
+    mock_req.post.return_value = _mock_response({"status": "queued"})
+
+    result = client.scheduled_tasks.run(TASK_ID)
+
+    assert result == {"status": "queued"}
+    requested_url = mock_req.post.call_args.args[0]
+    assert requested_url == (
+        f"https://claude.ai/api/organizations/{ORG_ID}/cowork/scheduled_tasks/{TASK_ID}/run"
+    )
+    payload = json.loads(mock_req.post.call_args.kwargs["data"])
+    assert payload == {}
+
+
+@patch("claude_client._transport.requests")
+def test_scheduled_tasks_run_raises_ambiguous_on_multi_org_unpinned_account(mock_req, client):
+    """Task ids are unique account-wide, but the org still has to be resolved (it's
+    part of the URL) — same AmbiguousOrgError contract as every other org-scoped call."""
+    mock_req.get.return_value = _mock_response(MULTI_ORGS_RESPONSE)
+    with pytest.raises(AmbiguousOrgError):
+        client.scheduled_tasks.run(TASK_ID)
+
+
 # ------------------------------------------------------------------------ docs
 
 
