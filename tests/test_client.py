@@ -1359,7 +1359,7 @@ def test_conversations_pull_standalone_prune_deletes_removed_conversation(
 
 IMAGE_UUID = "img12345-aaaa-bbbb-cccc-dddddddddddd"
 IMAGE_BYTES = b"RIFF\x00\x00\x00\x00WEBPVP8 fake"
-IMAGE_RELPATH = f"attachments/{CONV_UUID}/img12345-screenshot_2024.webp"
+IMAGE_RELPATH = f"attachments/{CONV_UUID}/{IMAGE_UUID}-screenshot_2024.webp"
 CONV_MD = "test-chat-conv-uui.md"
 
 
@@ -1451,6 +1451,58 @@ def test_conversations_pull_dedupes_image_listed_under_files_and_files_v2(
 
     assert len(preview_urls) == 1
     assert (tmp_path / CONV_MD).read_text().count(IMAGE_RELPATH) == 1
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_keeps_same_named_images_with_shared_uuid_prefix_apart(
+    mock_req, client, tmp_path
+):
+    """Regression: file uuids are UUIDv7, so two images uploaded within the same ~65s
+    share their first 8 chars. Same-named ones must still be saved as two files, each
+    linked from its own message — not the second skipped as "already on disk"."""
+    first_uuid = "019d58ee-1111-7000-8000-000000000001"
+    second_uuid = "019d58ee-2222-7000-8000-000000000002"
+    human, assistant = CONVERSATION_DETAIL["chat_messages"]
+    second_human = {
+        **human,
+        "uuid": "human-2",
+        "parent_message_uuid": assistant["uuid"],
+        "content": [{"type": "text", "text": "and this one"}],
+        "files": [_image_file(second_uuid, name="sc.jpg")],
+    }
+    detail = {
+        **CONVERSATION_DETAIL,
+        "chat_messages": [
+            {**human, "files": [_image_file(first_uuid, name="sc.png")]},
+            assistant,
+            second_human,
+        ],
+    }
+
+    def dispatch(url, **_kwargs):
+        if url.endswith("/organizations"):
+            return _mock_response(ORGS_RESPONSE)
+        if "/conversations_v2" in url:
+            return _mock_response(CONV_PAGE_RESPONSE)
+        if "/chat_conversations/" in url:
+            return _mock_response(detail)
+        if "/files/" in url:
+            r = _mock_response(None, headers={"content-type": "image/webp"})
+            r.content = url.split("/files/")[1].split("/")[0].encode()  # bytes = file uuid
+            return r
+        raise AssertionError(f"unexpected URL in test: {url}")
+
+    mock_req.get.side_effect = dispatch
+
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    first_path = f"attachments/{CONV_UUID}/{first_uuid}-sc.webp"
+    second_path = f"attachments/{CONV_UUID}/{second_uuid}-sc.webp"
+    assert (tmp_path / first_path).read_bytes() == first_uuid.encode()
+    assert (tmp_path / second_path).read_bytes() == second_uuid.encode()
+    md = (tmp_path / CONV_MD).read_text()
+    assert f"Hello\n\n![sc.png]({first_path})" in md
+    assert f"and this one\n\n![sc.jpg]({second_path})" in md
 
 
 @patch("claude_client._transport.requests")

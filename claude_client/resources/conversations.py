@@ -35,9 +35,15 @@ _UNKNOWN_IMAGE_SUFFIX = ".bin"
 
 
 def _attachment_stem(conv_uuid: str, image: ChatFileDict) -> str:
-    """Relative path (to the pulled dir) of a saved image, minus its extension."""
+    """
+    Relative path (to the pulled dir) of a saved image, minus its extension.
+
+    Uses the FULL file_uuid: file uuids are UUIDv7 (time-ordered), so a prefix is a
+    timestamp bucket, not an id — two images uploaded close together share it, and with
+    the same name would collide and the second be skipped as "already on disk".
+    """
     name = slugify(Path(image.get("file_name", "")).stem, fallback="image")
-    return f"{ATTACHMENTS_DIR}/{conv_uuid}/{image['file_uuid'][:8]}-{name}"
+    return f"{ATTACHMENTS_DIR}/{conv_uuid}/{image['file_uuid']}-{name}"
 
 
 def _existing_attachment(out: Path, stem: str) -> str | None:

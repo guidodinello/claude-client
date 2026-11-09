@@ -141,7 +141,7 @@ conv = client.conversations.get(conversation_id)
 # files for conversations removed on the web.
 client.conversations.pull(project_id, "./local-convos/")
 # Uploaded images are saved to ./local-convos/attachments/<conversation_uuid>/
-# <file_uuid[:8]>-<name>.webp (the web app's compressed preview; no endpoint for the
+# <file_uuid>-<name>.webp (the web app's compressed preview; no endpoint for the
 # original upload is known) and linked inline at their message. An image already on disk
 # is never re-downloaded; a failed download is reported "failed" and retried next run.
 
