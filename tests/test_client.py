@@ -1380,7 +1380,9 @@ def _detail_with_files(files: list[dict], key: str = "files") -> dict:
     return {**CONVERSATION_DETAIL, "chat_messages": [{**first, key: files}, *rest]}
 
 
-def _attachment_dispatch(detail: dict, *, page: dict = CONV_PAGE_RESPONSE, fail_files=False):
+def _attachment_dispatch(
+    detail: dict, *, page: dict = CONV_PAGE_RESPONSE, fail_files=False, forbid_files=False
+):
     """A `requests.get` side_effect serving one conversation and its image previews."""
     preview_urls: list[str] = []
 
@@ -1395,6 +1397,10 @@ def _attachment_dispatch(detail: dict, *, page: dict = CONV_PAGE_RESPONSE, fail_
             preview_urls.append(url)
             if fail_files:
                 raise RequestException("preview boom")
+            if forbid_files:
+                return _mock_response(
+                    {"error": "x"}, status_code=403, headers={"content-type": "application/json"}
+                )
             r = _mock_response(None, headers={"content-type": "image/webp"})
             r.content = IMAGE_BYTES
             return r
@@ -1529,6 +1535,20 @@ def test_conversations_pull_image_failure_is_reported_and_retried_next_run(
     assert len(preview_urls) == 1  # not skipped as unchanged: the image is retried
     assert results[IMAGE_RELPATH] == "created"
     assert results[CONV_MD] == "updated"
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_image_403_fails_only_that_image(mock_req, client, tmp_path):
+    """A 403 makes the transport raise AuthError, not RequestException; for one image's
+    preview that must still be a per-image failure, not abort the whole pull."""
+    dispatch, _ = _attachment_dispatch(_detail_with_files([_image_file()]), forbid_files=True)
+    mock_req.get.side_effect = dispatch
+
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert results[IMAGE_RELPATH.removesuffix(".webp")] == "failed"
+    assert results[CONV_MD] == "created"
+    assert (tmp_path / MANIFEST_NAME).exists()
 
 
 @patch("claude_client._transport.requests")

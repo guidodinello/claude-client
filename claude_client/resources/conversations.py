@@ -12,6 +12,7 @@ from rich.progress import Progress
 
 from .. import _manifest
 from .._transport import BASE_URL, Transport
+from ..exceptions import AuthError
 from ..models import ChatFileDict, ConversationDetailDict, ConversationDict, Page
 from ..render import conversation_filename, conversation_to_markdown, message_images, slugify
 
@@ -149,7 +150,10 @@ class ConversationsResource:
                     continue
                 try:
                     relpath = self._download_attachment(image, out, stem)
-                except requests.exceptions.RequestException as exc:
+                # AuthError too: the transport raises it for any 403, and a 403 here is a
+                # per-file refusal — `self.get()` just succeeded with the same token. A
+                # genuinely expired token still aborts on the next conversation fetch.
+                except (requests.exceptions.RequestException, AuthError) as exc:
                     fetched.failed[stem] = exc
                     continue
                 fetched.saved[file_uuid] = relpath
