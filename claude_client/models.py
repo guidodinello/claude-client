@@ -70,7 +70,28 @@ class MessageContentDict(TypedDict):
     text: str
 
 
+class ChatFileDict(TypedDict):
+    """
+    One entry of a message's `files` list (verified live on 2026-11-08). Uploaded images
+    have file_kind "image" and a preview_url (a compressed webp preview, not the original
+    upload); other uploads have file_kind "blob" and no preview_url — their text is
+    already inlined in the conversation.
+    """
+
+    file_kind: str
+    file_uuid: str
+    file_name: str
+    size_bytes: NotRequired[int]
+    thumbnail_url: NotRequired[str]
+    preview_url: NotRequired[str]
+
+
 class ChatMessageDict(TypedDict):
+    """
+    `files_v2` and `attachments` are scanned for images too (deduped against `files` by
+    file_uuid), but their shape hasn't been verified against a live conversation.
+    """
+
     uuid: str
     sender: str
     content: list[MessageContentDict]
@@ -78,6 +99,9 @@ class ChatMessageDict(TypedDict):
     index: int
     created_at: str
     updated_at: str
+    files: NotRequired[list[ChatFileDict]]
+    files_v2: NotRequired[list[ChatFileDict]]
+    attachments: NotRequired[list[dict]]
 
 
 class ConversationDetailDict(TypedDict):

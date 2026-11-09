@@ -11,6 +11,7 @@ Python client for the Claude.ai web API — manage projects, sync files, and exp
 - List, get, and pull conversations as Markdown files
 - Export a full project to a single Markdown file (title, description, instructions, memory, docs, conversations)
 - Pull a full project to a local directory (project.md, docs/, conversations/) — incremental by default, `--force` to always rewrite, `--prune` to delete local files/dirs removed on the web
+- Back up images uploaded to conversations alongside them (`conversations/attachments/<conversation-uuid>/`), linked inline in the conversation's Markdown — only a compressed webp preview is available, not the original upload
 - Migrate a project's docs, conversations, and memory to another project — even across accounts/orgs
 - Run a Projects/Cowork scheduled task on demand (the "Ejecutar ahora" button)
 - Resource-namespaced Python client (`client.projects`, `client.docs`, `client.conversations`, `client.memory`, `client.orgs`, `client.scheduled_tasks`) and matching CLI
@@ -139,6 +140,10 @@ conv = client.conversations.get(conversation_id)
 # pull manifest is never re-fetched. force=True bypasses that; prune=True deletes local
 # files for conversations removed on the web.
 client.conversations.pull(project_id, "./local-convos/")
+# Uploaded images are saved to ./local-convos/attachments/<conversation_uuid>/
+# <file_uuid[:8]>-<name>.webp (the web app's compressed preview; no endpoint for the
+# original upload is known) and linked inline at their message. An image already on disk
+# is never re-downloaded; a failed download is reported "failed" and retried next run.
 
 # Standalone (non-project) conversations — account-wide, like pull_all. Call on an
 # unscoped client, not one already pinned to a single org.

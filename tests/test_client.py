@@ -1355,6 +1355,276 @@ def test_conversations_pull_standalone_prune_deletes_removed_conversation(
     assert not (tmp_path / "standalone-chat-standalo.md").exists()
 
 
+# ------------------------------------------------------------ conversations: attachments
+
+IMAGE_UUID = "img12345-aaaa-bbbb-cccc-dddddddddddd"
+IMAGE_BYTES = b"RIFF\x00\x00\x00\x00WEBPVP8 fake"
+IMAGE_RELPATH = f"attachments/{CONV_UUID}/img12345-screenshot_2024.webp"
+CONV_MD = "test-chat-conv-uui.md"
+
+
+def _image_file(file_uuid: str = IMAGE_UUID, name: str = "Screenshot_2024.jpg") -> dict:
+    return {
+        "file_kind": "image",
+        "file_uuid": file_uuid,
+        "file_name": name,
+        "size_bytes": 1014534,
+        "thumbnail_url": f"/api/{ORG_ID}/files/{file_uuid}/thumbnail",
+        "preview_url": f"/api/{ORG_ID}/files/{file_uuid}/preview",
+    }
+
+
+def _detail_with_files(files: list[dict], key: str = "files") -> dict:
+    """CONVERSATION_DETAIL with `files` attached to the human (first) message."""
+    first, *rest = CONVERSATION_DETAIL["chat_messages"]
+    return {**CONVERSATION_DETAIL, "chat_messages": [{**first, key: files}, *rest]}
+
+
+def _attachment_dispatch(detail: dict, *, page: dict = CONV_PAGE_RESPONSE, fail_files=False):
+    """A `requests.get` side_effect serving one conversation and its image previews."""
+    preview_urls: list[str] = []
+
+    def dispatch(url, **_kwargs):
+        if url.endswith("/organizations"):
+            return _mock_response(ORGS_RESPONSE)
+        if "/conversations_v2" in url:
+            return _mock_response(page)
+        if "/chat_conversations/" in url:
+            return _mock_response(detail)
+        if "/files/" in url:
+            preview_urls.append(url)
+            if fail_files:
+                raise RequestException("preview boom")
+            r = _mock_response(None, headers={"content-type": "image/webp"})
+            r.content = IMAGE_BYTES
+            return r
+        raise AssertionError(f"unexpected URL in test: {url}")
+
+    return dispatch, preview_urls
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_saves_image_and_links_it_inline(mock_req, client, tmp_path):
+    dispatch, preview_urls = _attachment_dispatch(_detail_with_files([_image_file()]))
+    mock_req.get.side_effect = dispatch
+
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert preview_urls == [f"https://claude.ai/api/{ORG_ID}/files/{IMAGE_UUID}/preview"]
+    assert (tmp_path / IMAGE_RELPATH).read_bytes() == IMAGE_BYTES
+    assert results[IMAGE_RELPATH] == "created"
+    md = (tmp_path / CONV_MD).read_text()
+    assert f"**Human**\nHello\n\n![Screenshot_2024.jpg]({IMAGE_RELPATH})\n" in md
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_skips_blob_files(mock_req, client, tmp_path):
+    blob = {"file_kind": "blob", "file_uuid": "blob-uuid", "file_name": "notes.txt"}
+    dispatch, preview_urls = _attachment_dispatch(_detail_with_files([blob]))
+    mock_req.get.side_effect = dispatch
+
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert preview_urls == []
+    assert not (tmp_path / "attachments").exists()
+    assert "notes.txt" not in (tmp_path / CONV_MD).read_text()
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_dedupes_image_listed_under_files_and_files_v2(
+    mock_req, client, tmp_path
+):
+    first, *rest = CONVERSATION_DETAIL["chat_messages"]
+    msg = {**first, "files": [_image_file()], "files_v2": [_image_file()]}
+    dispatch, preview_urls = _attachment_dispatch(
+        {**CONVERSATION_DETAIL, "chat_messages": [msg, *rest]}
+    )
+    mock_req.get.side_effect = dispatch
+
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert len(preview_urls) == 1
+    assert (tmp_path / CONV_MD).read_text().count(IMAGE_RELPATH) == 1
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_never_redownloads_existing_image(mock_req, client, tmp_path):
+    dispatch, preview_urls = _attachment_dispatch(_detail_with_files([_image_file()]))
+    mock_req.get.side_effect = dispatch
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    # force re-fetches the conversation itself, but the image is already on disk
+    results = client.conversations.pull(PROJECT_ID, tmp_path, force=True)
+
+    assert len(preview_urls) == 1
+    assert IMAGE_RELPATH not in results
+    assert IMAGE_RELPATH in (tmp_path / CONV_MD).read_text()
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_unchanged_skip_keeps_attachments(mock_req, client, tmp_path):
+    dispatch, preview_urls = _attachment_dispatch(_detail_with_files([_image_file()]))
+    mock_req.get.side_effect = dispatch
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert results == {CONV_MD: "unchanged"}
+    assert len(preview_urls) == 1
+    assert (tmp_path / IMAGE_RELPATH).exists()
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_refetches_when_recorded_image_deleted_locally(
+    mock_req, client, tmp_path
+):
+    dispatch, preview_urls = _attachment_dispatch(_detail_with_files([_image_file()]))
+    mock_req.get.side_effect = dispatch
+    client.conversations.pull(PROJECT_ID, tmp_path)
+    (tmp_path / IMAGE_RELPATH).unlink()
+
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert results[IMAGE_RELPATH] == "created"
+    assert len(preview_urls) == 2
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_refetches_entry_from_before_attachment_support(
+    mock_req, client, tmp_path
+):
+    """A manifest written by an older client has no attachments key: the conversation
+    must be fetched once more so its images get backed up, not skipped as unchanged."""
+    (tmp_path / CONV_MD).write_text("old render")
+    old_manifest = {CONV_UUID: {"filename": CONV_MD, "updated_at": "2024-01-02T11:00:00Z"}}
+    (tmp_path / MANIFEST_NAME).write_text(json.dumps(old_manifest))
+    dispatch, _ = _attachment_dispatch(_detail_with_files([_image_file()]))
+    mock_req.get.side_effect = dispatch
+
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert results[CONV_MD] == "updated"
+    assert results[IMAGE_RELPATH] == "created"
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_image_failure_is_reported_and_retried_next_run(
+    mock_req, client, tmp_path
+):
+    detail = _detail_with_files([_image_file()])
+    dispatch, _ = _attachment_dispatch(detail, fail_files=True)
+    mock_req.get.side_effect = dispatch
+
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
+
+    stem = IMAGE_RELPATH.removesuffix(".webp")
+    assert results[stem] == "failed"
+    assert results[CONV_MD] == "created"  # the conversation itself still lands
+    assert "[Image not downloaded: Screenshot_2024.jpg]" in (tmp_path / CONV_MD).read_text()
+
+    dispatch, preview_urls = _attachment_dispatch(detail)
+    mock_req.get.side_effect = dispatch
+    results = client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert len(preview_urls) == 1  # not skipped as unchanged: the image is retried
+    assert results[IMAGE_RELPATH] == "created"
+    assert results[CONV_MD] == "updated"
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_prune_removes_attachments_of_deleted_conversation(
+    mock_req, client, tmp_path
+):
+    dispatch, _ = _attachment_dispatch(_detail_with_files([_image_file()]))
+    mock_req.get.side_effect = dispatch
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    empty_conv_page = {
+        "data": [],
+        "pagination": {"total": 0, "limit": 30, "offset": 0, "has_more": False},
+    }
+    dispatch, _ = _attachment_dispatch({}, page=empty_conv_page)
+    mock_req.get.side_effect = dispatch
+    results = client.conversations.pull(PROJECT_ID, tmp_path, prune=True)
+
+    assert results[f"attachments/{CONV_UUID}"] == "deleted"
+    assert not (tmp_path / "attachments" / CONV_UUID).exists()
+    assert CONV_UUID not in json.loads((tmp_path / MANIFEST_NAME).read_text())
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_without_prune_keeps_attachments_of_deleted_conversation(
+    mock_req, client, tmp_path
+):
+    dispatch, _ = _attachment_dispatch(_detail_with_files([_image_file()]))
+    mock_req.get.side_effect = dispatch
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    empty_conv_page = {
+        "data": [],
+        "pagination": {"total": 0, "limit": 30, "offset": 0, "has_more": False},
+    }
+    dispatch, _ = _attachment_dispatch({}, page=empty_conv_page)
+    mock_req.get.side_effect = dispatch
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    assert (tmp_path / IMAGE_RELPATH).exists()
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_rename_with_prune_keeps_attachments(mock_req, client, tmp_path):
+    detail = _detail_with_files([_image_file()])
+    dispatch, _ = _attachment_dispatch(detail)
+    mock_req.get.side_effect = dispatch
+    client.conversations.pull(PROJECT_ID, tmp_path)
+
+    renamed_meta = {**CONVERSATION_META[0], "name": "Renamed", "updated_at": "2024-02-01"}
+    page = {**CONV_PAGE_RESPONSE, "data": [renamed_meta]}
+    dispatch, preview_urls = _attachment_dispatch({**detail, "name": "Renamed"}, page=page)
+    mock_req.get.side_effect = dispatch
+    results = client.conversations.pull(PROJECT_ID, tmp_path, prune=True)
+
+    assert results[CONV_MD] == "deleted"
+    assert preview_urls == []
+    assert (tmp_path / IMAGE_RELPATH).exists()
+    assert IMAGE_RELPATH in (tmp_path / "renamed-conv-uui.md").read_text()
+    assert CONV_UUID in json.loads((tmp_path / MANIFEST_NAME).read_text())
+
+
+@patch("claude_client._transport.requests")
+def test_conversations_pull_standalone_saves_attachments(mock_req, client, tmp_path):
+    detail = {**_detail_with_files([_image_file()]), "name": "Standalone Chat"}
+    preview = _mock_response(None, headers={"content-type": "image/webp"})
+    preview.content = IMAGE_BYTES
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response([_standalone_conv(CONV_UUID)]),
+        _mock_response(detail),
+        preview,
+    ]
+
+    results = client.conversations.pull_standalone(tmp_path)
+
+    assert results[IMAGE_RELPATH] == "created"
+    assert (tmp_path / IMAGE_RELPATH).read_bytes() == IMAGE_BYTES
+
+
+def test_conversation_to_markdown_without_attachment_map_omits_images():
+    md = conversation_to_markdown(_detail_with_files([_image_file()]))
+
+    assert md == conversation_to_markdown(CONVERSATION_DETAIL)
+
+
+def test_conversation_to_markdown_renders_image_only_message():
+    first, *rest = CONVERSATION_DETAIL["chat_messages"]
+    msg = {**first, "content": [], "files": [_image_file()]}
+    conv = {**CONVERSATION_DETAIL, "chat_messages": [msg, *rest]}
+
+    md = conversation_to_markdown(conv, {IMAGE_UUID: "attachments/x/img.webp"})
+
+    assert "**Human**\n![Screenshot_2024.jpg](attachments/x/img.webp)\n" in md
+
+
 # --------------------------------------------------------------------- projects
 # (composite: pull / pull_all, which pull docs + conversations + memory together)
 
