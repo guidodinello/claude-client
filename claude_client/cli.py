@@ -201,7 +201,9 @@ def _account_pull_conversations(args: argparse.Namespace) -> None:
         args.output_dir, force=args.force, prune=args.prune
     )
     _print_pull_results(results, "conversations")
-    print(f"Pulled {len(results)} conversation(s) to {args.output_dir}/")
+    # results also carries attachment paths (attachments/...); count only conversations
+    conversations = sum(name.endswith(".md") for name in results)
+    print(f"Pulled {conversations} conversation(s) to {args.output_dir}/")
 
 
 # --------------------------------------------------------------- conversations

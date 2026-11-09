@@ -1,14 +1,56 @@
 """Rendering helpers for Claude project data."""
 
 import re
+from collections.abc import Mapping
 
-from .models import ChatMessageDict, ConversationDetailDict, MessageContentDict, ProjectExport
+from .models import (
+    ChatFileDict,
+    ChatMessageDict,
+    ConversationDetailDict,
+    MessageContentDict,
+    ProjectExport,
+)
 
 ROOT_MESSAGE_UUID = "00000000-0000-4000-8000-000000000000"
 
+_IMAGE_FILE_KIND = "image"
+_MESSAGE_FILE_KEYS = ("files", "files_v2", "attachments")
 
-def conversation_to_markdown(conv: ConversationDetailDict) -> str:
-    """Render a conversation detail dict as markdown, showing all branches."""
+
+def message_images(msg: ChatMessageDict) -> list[ChatFileDict]:
+    """
+    The downloadable images attached to a message, deduped by file_uuid across every key
+    that may carry files. Non-image uploads ("blob") are skipped: their text is already
+    part of the conversation.
+    """
+    seen: set[str] = set()
+    images: list[ChatFileDict] = []
+    for key in _MESSAGE_FILE_KEYS:
+        for f in msg.get(key) or []:
+            file_uuid = f.get("file_uuid")
+            if (
+                f.get("file_kind") != _IMAGE_FILE_KIND
+                or not f.get("preview_url")
+                or not file_uuid
+                or file_uuid in seen
+            ):
+                continue
+            seen.add(file_uuid)
+            images.append(f)
+    return images
+
+
+def conversation_to_markdown(
+    conv: ConversationDetailDict, attachments: Mapping[str, str] | None = None
+) -> str:
+    """
+    Render a conversation detail dict as markdown, showing all branches.
+
+    `attachments` maps an image's file_uuid to the relative path it was saved at; each
+    image is then linked inline at the message it was attached to, or marked as not
+    downloaded if its uuid is missing from the map. With `attachments=None` (e.g. a
+    single-file export, which saves no images) images aren't mentioned at all.
+    """
     lines: list[str] = []
 
     name = conv.get("name", "Untitled")
@@ -73,6 +115,16 @@ def conversation_to_markdown(conv: ConversationDetailDict) -> str:
                         parts.append(f"[Thinking]\n{thinking}")
         return "\n\n".join(parts)
 
+    def format_images(msg: ChatMessageDict) -> str:
+        if attachments is None:
+            return ""
+        parts = []
+        for image in message_images(msg):
+            name = re.sub(r"([\[\]])", r"\\\1", image.get("file_name", "image"))
+            path = attachments.get(image["file_uuid"])
+            parts.append(f"![{name}]({path})" if path else f"[Image not downloaded: {name}]")
+        return "\n\n".join(parts)
+
     lines.append("")
     roots = find_roots()
     if roots:
@@ -91,7 +143,11 @@ def conversation_to_markdown(conv: ConversationDetailDict) -> str:
                         label = "Claude"
                     else:
                         label = sender.capitalize()
-                    text = format_content(msg.get("content", []))
+                    text = "\n\n".join(
+                        part
+                        for part in (format_content(msg.get("content", [])), format_images(msg))
+                        if part
+                    )
                     if text:
                         lines.append(f"**{label}**\n{text}\n")
                 lines.append("")

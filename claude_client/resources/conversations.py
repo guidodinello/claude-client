@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import mimetypes
+import shutil
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from curl_cffi import requests
@@ -9,8 +12,9 @@ from rich.progress import Progress
 
 from .. import _manifest
 from .._transport import BASE_URL, Transport
-from ..models import ConversationDetailDict, ConversationDict, Page
-from ..render import conversation_filename, conversation_to_markdown
+from ..exceptions import AuthError
+from ..models import ChatFileDict, ConversationDetailDict, ConversationDict, Page
+from ..render import conversation_filename, conversation_to_markdown, message_images, slugify
 
 logger = get_logger(__name__)
 
@@ -19,6 +23,46 @@ _STANDALONE_PAGE_LIMIT = 200  # this endpoint tolerates far larger pages than co
 # Conservative: this endpoint isn't documented as rate-limited, but the impersonated-browser
 # fingerprint in _transport.py is itself evidence claude.ai is bot-detection sensitive.
 _MAX_CONVERSATION_FETCH_WORKERS = 5
+
+# A file's preview_url is site-relative ("/api/<org>/files/<uuid>/preview"), so it's joined
+# to the origin, not BASE_URL (which already ends in /api).
+_CLAUDE_ORIGIN = "https://claude.ai"
+# Images live under {out}/attachments/{conversation_uuid}/ — keyed by the conversation's
+# uuid rather than its filename slug, so a renamed conversation keeps its images (and its
+# links stay valid) and the directory is owned by exactly one conversation for pruning.
+ATTACHMENTS_DIR = "attachments"
+_UNKNOWN_IMAGE_SUFFIX = ".bin"
+
+
+def _attachment_stem(conv_uuid: str, image: ChatFileDict) -> str:
+    """
+    Relative path (to the pulled dir) of a saved image, minus its extension.
+
+    Uses the FULL file_uuid: file uuids are UUIDv7 (time-ordered), so a prefix is a
+    timestamp bucket, not an id — two images uploaded close together share it, and with
+    the same name would collide and the second be skipped as "already on disk".
+    """
+    name = slugify(Path(image.get("file_name", "")).stem, fallback="image")
+    return f"{ATTACHMENTS_DIR}/{conv_uuid}/{image['file_uuid']}-{name}"
+
+
+def _existing_attachment(out: Path, stem: str) -> str | None:
+    """The already-saved file for `stem`, whatever extension it was saved with."""
+    stem_path = out / stem
+    # The extension comes from the download's content-type, so it isn't known up front.
+    # In-progress downloads are dot-prefixed (see `_download_attachment`), so never match.
+    match = next(stem_path.parent.glob(f"{stem_path.name}.*"), None)
+    return f"{Path(stem).parent.as_posix()}/{match.name}" if match else None
+
+
+@dataclass(slots=True)
+class _FetchedConversation:
+    """A conversation plus the outcome of backing up its images (see `_fetch`)."""
+
+    conv: ConversationDetailDict
+    saved: dict[str, str] = field(default_factory=dict)  # file_uuid -> relpath on disk
+    downloaded: list[str] = field(default_factory=list)  # relpaths written this run
+    failed: dict[str, Exception] = field(default_factory=dict)  # stem -> error
 
 
 class ConversationsResource:
@@ -71,6 +115,57 @@ class ConversationsResource:
         )
         return resp.json()
 
+    def _download_attachment(self, image: ChatFileDict, out: Path, stem: str) -> str:
+        """
+        Download an image's preview and save it as `stem` + an extension from the
+        response's content-type. Returns the saved relative path.
+
+        Only the compressed preview is fetched (a webp, verified live): no endpoint for
+        the original upload is known. Written via a temp file then renamed, so "file
+        exists" reliably means "fully downloaded" for the incremental check.
+        """
+        # `message_images` only yields images that have a preview_url.
+        resp = self._t.get(_CLAUDE_ORIGIN + image.get("preview_url", ""))
+        content_type = resp.headers.get("content-type", "").split(";")[0].strip()
+        relpath = stem + (mimetypes.guess_extension(content_type) or _UNKNOWN_IMAGE_SUFFIX)
+        dest = out / relpath
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(f".{dest.name}.part")
+        tmp.write_bytes(resp.content)
+        tmp.replace(dest)
+        return relpath
+
+    def _fetch(self, conversation_id: str, out: Path) -> _FetchedConversation:
+        """
+        `get()` a conversation, then save each of its images not already on disk.
+
+        Runs in a pool worker. A failed image download is recorded in `failed` rather
+        than raised, so one bad image never costs the whole conversation; only the
+        conversation fetch itself raising propagates.
+        """
+        fetched = _FetchedConversation(self.get(conversation_id))
+        for msg in fetched.conv.get("chat_messages", []):
+            for image in message_images(msg):
+                file_uuid = image["file_uuid"]
+                if file_uuid in fetched.saved:
+                    continue
+                stem = _attachment_stem(conversation_id, image)
+                existing = _existing_attachment(out, stem)
+                if existing:
+                    fetched.saved[file_uuid] = existing
+                    continue
+                try:
+                    relpath = self._download_attachment(image, out, stem)
+                # AuthError too: the transport raises it for any 403, and a 403 here is a
+                # per-file refusal — `self.get()` just succeeded with the same token. A
+                # genuinely expired token still aborts on the next conversation fetch.
+                except (requests.exceptions.RequestException, AuthError) as exc:
+                    fetched.failed[stem] = exc
+                    continue
+                fetched.saved[file_uuid] = relpath
+                fetched.downloaded.append(relpath)
+        return fetched
+
     def _pull_conversations(
         self,
         conv_metas: list[ConversationDict],
@@ -102,9 +197,17 @@ class ConversationsResource:
         HTTP session per call (curl_cffi, not a shared `Session`), so this is safe
         without locking. Futures are drained in submission order (not `as_completed`)
         so that filename-collision tie-breaking and the reported `results`/`entries`
-        stay identical to a purely sequential run. All dict/disk writes happen here,
-        in the calling thread, while futures are drained — never inside a worker
-        thread — so no lock is needed for `results`/`entries`.
+        stay identical to a purely sequential run. Each worker also saves its
+        conversation's images (`_fetch`) — safe without locking because every image
+        path is under that conversation's own uuid directory. Everything else (the
+        markdown files, `results`/`entries`) is written here, in the calling thread,
+        while futures are drained.
+
+        A conversation is only skipped when its recorded images are all still on disk
+        and it was scanned for images at all (`attachments is not None` — entries
+        written before image backup existed are re-fetched once). One whose image
+        download failed is recorded with an empty `updated_at`, so the next run
+        re-fetches it and retries the image instead of skipping it as unchanged.
         """
         previous = _manifest.load(out)
         results: dict[str, str] = {}
@@ -125,6 +228,8 @@ class ConversationsResource:
                 and remote_updated_at
                 and prior.updated_at == remote_updated_at
                 and (out / prior.filename).exists()
+                and prior.attachments is not None
+                and all((out / relpath).exists() for relpath in prior.attachments)
             ):
                 results[prior.filename] = "unchanged"
                 entries[uuid] = prior
@@ -136,11 +241,11 @@ class ConversationsResource:
 
         task_id = progress.add_task(label, total=len(to_fetch))
         with ThreadPoolExecutor(max_workers=_MAX_CONVERSATION_FETCH_WORKERS) as pool:
-            futures = [pool.submit(self.get, uuid) for uuid, _ in to_fetch]
+            futures = [pool.submit(self._fetch, uuid, out) for uuid, _ in to_fetch]
             for (uuid, remote_updated_at), future in zip(to_fetch, futures, strict=True):
                 prior = previous.get(uuid)
                 try:
-                    conv = future.result()
+                    fetched = future.result()
                 except requests.exceptions.RequestException as exc:
                     logger.warning("Failed to fetch conversation %s, skipping: %s", uuid, exc)
                     if prior is not None:
@@ -148,7 +253,19 @@ class ConversationsResource:
                     progress.advance(task_id)
                     continue
 
-                content = conversation_to_markdown(conv)
+                for relpath in fetched.downloaded:
+                    results[relpath] = "created"
+                for stem, exc in fetched.failed.items():
+                    logger.warning(
+                        "Failed to download attachment %s of conversation %s, skipping: %s",
+                        stem,
+                        uuid,
+                        exc,
+                    )
+                    results[stem] = "failed"
+
+                conv = fetched.conv
+                content = conversation_to_markdown(conv, fetched.saved)
                 filename = conversation_filename(conv)
                 dest = out / filename
                 existed = dest.exists()
@@ -158,11 +275,46 @@ class ConversationsResource:
                     dest.write_text(content, encoding="utf-8")
                     results[filename] = "updated" if existed else "created"
                 entries[uuid] = _manifest.ManifestEntry(
-                    filename=filename, updated_at=remote_updated_at
+                    filename=filename,
+                    updated_at="" if fetched.failed else remote_updated_at,
+                    attachments=tuple(sorted(fetched.saved.values())),
                 )
                 progress.advance(task_id)
 
         return results, entries, previous
+
+    @staticmethod
+    def _save_manifest(
+        out: Path,
+        results: dict[str, str],
+        entries: dict[str, _manifest.ManifestEntry],
+        previous: dict[str, _manifest.ManifestEntry],
+        *,
+        prune: bool,
+    ) -> None:
+        """
+        Save the manifest, first pruning (if asked) what was removed on the web.
+
+        Shared by `pull` and `pull_standalone`. A prune target whose uuid is still in
+        `entries` is a rename: only its old .md goes, its images (keyed by uuid, not
+        filename) and new manifest entry stay. A uuid absent from `entries` is gone on
+        the web, so its whole attachments directory goes with it. Only called after a
+        successful listing — a failed one raises before reaching here, so nothing is
+        pruned on a failed pull.
+        """
+        to_save = {**previous, **entries}
+        if prune:
+            for uuid, filename in _manifest.prune_targets(previous, entries):
+                (out / filename).unlink(missing_ok=True)
+                results[filename] = "deleted"
+                if uuid in entries:
+                    continue
+                to_save.pop(uuid, None)
+                attachments_dir = out / ATTACHMENTS_DIR / uuid
+                if attachments_dir.exists():
+                    shutil.rmtree(attachments_dir)
+                    results[f"{ATTACHMENTS_DIR}/{uuid}"] = "deleted"
+        _manifest.save(out, to_save)
 
     def _pull_into(
         self,
@@ -183,14 +335,7 @@ class ConversationsResource:
             conv_metas, out, force=force, progress=progress, label=label
         )
 
-        to_save = {**previous, **entries}
-        if prune:
-            for uuid, filename in _manifest.prune_targets(previous, entries):
-                (out / filename).unlink(missing_ok=True)
-                results[filename] = "deleted"
-                to_save.pop(uuid, None)
-
-        _manifest.save(out, to_save)
+        self._save_manifest(out, results, entries, previous, prune=prune)
         return results
 
     def pull(
@@ -204,15 +349,22 @@ class ConversationsResource:
         """
         Pull conversations from the web project into a local directory as markdown files.
 
+        Images uploaded to a conversation are saved under
+        `attachments/<conversation_uuid>/` and linked inline at the message they were
+        attached to. An image already on disk is never re-downloaded. A failed image
+        download is logged and reported "failed" under its path (without extension),
+        never aborting the conversation or the run.
+
         Incremental over the network via a sidecar manifest keyed by conversation uuid: a
         conversation whose remote `updated_at` matches the manifest and whose local file
         still exists is never re-fetched, and is reported "unchanged". Pass force=True to
         bypass the manifest and always re-fetch and rewrite every file (e.g. to recover
         from local edits) — web is the source of truth whenever it changed.
 
-        Pass prune=True to delete local files for conversations removed on the web
-        (reported "deleted"); default is off so ad-hoc pulls never delete anything.
-        Returns a dict mapping each filename to "created", "updated", "unchanged", or "deleted".
+        Pass prune=True to delete local files (and attachments) for conversations removed
+        on the web (reported "deleted"); default is off so ad-hoc pulls never delete
+        anything. Returns a dict mapping each filename to "created", "updated",
+        "unchanged", "deleted", or (attachments only) "failed".
         """
         with Progress() as progress:
             return self._pull_into(
@@ -263,9 +415,9 @@ class ConversationsResource:
         already pinned to a single org, or only that org's standalone chats are pulled.
 
         Same incremental/prune semantics as `pull()`: unchanged conversations are skipped
-        via the manifest, prune=True deletes local files for conversations removed on the
-        web. Conversation uuids are unique account-wide, so all orgs safely share one
-        manifest in `out_dir`.
+        via the manifest, images are saved under `attachments/`, prune=True deletes local
+        files and attachments for conversations removed on the web. Conversation uuids
+        are unique account-wide, so all orgs safely share one manifest in `out_dir`.
 
         `_pull_conversations` is called once per org, through a transport pinned to that
         org (not `self`, which may be unscoped on a multi-org account) — `get()` needs a
@@ -299,12 +451,5 @@ class ConversationsResource:
                 results.update(org_results)
                 entries.update(org_entries)
 
-        to_save = {**previous, **entries}
-        if prune:
-            for uuid, filename in _manifest.prune_targets(previous, entries):
-                (out / filename).unlink(missing_ok=True)
-                results[filename] = "deleted"
-                to_save.pop(uuid, None)
-
-        _manifest.save(out, to_save)
+        self._save_manifest(out, results, entries, previous, prune=prune)
         return results

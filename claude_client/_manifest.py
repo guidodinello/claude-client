@@ -21,8 +21,17 @@ MANIFEST_NAME = ".claude-pull-manifest.json"
 
 @dataclass(frozen=True, slots=True)
 class ManifestEntry:
+    """
+    `attachments` is only used by conversation pulls: the paths (relative to the pulled
+    directory) of the image attachments saved for that conversation. `None` means "never
+    scanned for attachments" (an entry written before attachments were supported, or a
+    docs/projects entry) — distinct from `()`, "scanned, has none" — so a conversation
+    pulled by an older client is re-fetched once to back up its images.
+    """
+
     filename: str
     updated_at: str
+    attachments: tuple[str, ...] | None = None
 
 
 def load(directory: Path) -> dict[str, ManifestEntry]:
@@ -32,7 +41,7 @@ def load(directory: Path) -> dict[str, ManifestEntry]:
         return {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        return {uuid: ManifestEntry(**entry) for uuid, entry in raw.items()}
+        return {uuid: _entry_from_json(entry) for uuid, entry in raw.items()}
     except (json.JSONDecodeError, TypeError, KeyError) as exc:
         backup = path.with_name(path.name + ".corrupt")
         path.replace(backup)
@@ -45,10 +54,23 @@ def load(directory: Path) -> dict[str, ManifestEntry]:
         return {}
 
 
+def _entry_from_json(raw: dict) -> ManifestEntry:
+    entry = ManifestEntry(**raw)
+    if entry.attachments is None:
+        return entry
+    return ManifestEntry(entry.filename, entry.updated_at, tuple(entry.attachments))
+
+
+def _entry_to_json(entry: ManifestEntry) -> dict:
+    # Omit an unset `attachments` so docs/projects manifests stay byte-identical to
+    # what they were before the field existed (they're committed in git-versioned backups).
+    return {key: value for key, value in asdict(entry).items() if value is not None}
+
+
 def save(directory: Path, entries: dict[str, ManifestEntry]) -> None:
     """Write the manifest atomically (write to a temp file, then rename over it)."""
     path = directory / MANIFEST_NAME
-    payload = {uuid: asdict(entry) for uuid, entry in entries.items()}
+    payload = {uuid: _entry_to_json(entry) for uuid, entry in entries.items()}
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(path)
