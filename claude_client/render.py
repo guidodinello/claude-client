@@ -184,7 +184,8 @@ def render_project_metadata(export: ProjectExport) -> str:
         sections.append(f"## Instructions\n\n{export.instructions}\n")
 
     if export.memory:
-        sections.append(f"## Memory\n\n{export.memory}\n")
+        heading = "Memory (frozen pre-migration snapshot)" if export.memory_frozen else "Memory"
+        sections.append(f"## {heading}\n\n{export.memory}\n")
 
     if export.controls:
         controls_md = "\n".join(f"- {c}" for c in export.controls)

@@ -10,13 +10,20 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from .. import _manifest
 from .._transport import BASE_URL, Transport
 from ..exceptions import NotFoundError
-from ..models import ProjectDict, ProjectExport, ProjectPullResult, ProjectSyncResult
+from ..models import MemoryDict, ProjectDict, ProjectExport, ProjectPullResult, ProjectSyncResult
 from ..render import render_project, render_project_metadata, slugify
 from .conversations import ConversationsResource
 from .docs import DocsResource
 from .memory import MemoryResource
 
 logger = get_logger(__name__)
+
+
+def _memory_is_frozen(memory_data: MemoryDict) -> bool:
+    """True once the project's memory moved to melange, leaving the legacy blob frozen."""
+    # `project_import` is present but null for projects that were never migrated.
+    project_import = memory_data.get("project_import") or {}
+    return project_import.get("status") == "migrated"
 
 
 def _resolve_project_slugs(
@@ -198,6 +205,7 @@ class ProjectsResource:
             description=project.get("description", ""),
             instructions=project.get("prompt_template", ""),
             memory=memory_data.get("memory", ""),
+            memory_frozen=_memory_is_frozen(memory_data),
             controls=memory_data.get("controls", []),
             docs=docs,
             conversations=conversations,
@@ -240,6 +248,7 @@ class ProjectsResource:
             description=project.get("description", ""),
             instructions=project.get("prompt_template", ""),
             memory=memory_data.get("memory", ""),
+            memory_frozen=_memory_is_frozen(memory_data),
             controls=memory_data.get("controls", []),
         )
         (out / "project.md").write_text(render_project_metadata(meta), encoding="utf-8")
