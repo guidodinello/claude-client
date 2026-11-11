@@ -288,6 +288,17 @@ def test_pull_propagates_non_404_listing_errors(server, client, tmp_path):
 # ------------------------------------------------------- legacy memory label
 
 
+def test_legacy_memory_get_requests_project_import_status():
+    with patch("claude_client._transport.requests") as mock_req:
+        mock_req.get.return_value = _response({"memory": "", "controls": [], "updated_at": ""})
+        ClaudeClient(TOKEN, org_id=ORG_ID).memory.get("p")
+
+    url = mock_req.get.call_args.args[0]
+    assert url.endswith(
+        f"/organizations/{ORG_ID}/memory?project_uuid=p&include_project_import=true"
+    )
+
+
 @pytest.mark.parametrize(
     ("frozen", "heading"),
     [(False, "## Memory\n"), (True, "## Memory (frozen pre-migration snapshot)\n")],

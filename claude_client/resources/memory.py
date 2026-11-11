@@ -75,9 +75,16 @@ class MemoryResource:
         self._t = transport
 
     def get(self, project_id: str) -> MemoryDict:
-        """Fetch the legacy project memory and controls. Scoped to the transport's org."""
+        """
+        Fetch the legacy project memory and controls. Scoped to the transport's org.
+
+        `include_project_import=true` is what the web app sends: without it the server
+        returns `project_import`/`project_memory_mode` as null even for projects migrated
+        to melange (verified live), hiding that the blob is frozen.
+        """
         resp = self._t.get(
-            f"{BASE_URL}/organizations/{self._t.org_id}/memory?project_uuid={project_id}"
+            f"{BASE_URL}/organizations/{self._t.org_id}/memory"
+            f"?project_uuid={project_id}&include_project_import=true"
         )
         return resp.json()
 
