@@ -17,6 +17,7 @@ from claude_client import ClaudeClient
 from claude_client._manifest import MANIFEST_NAME
 from claude_client.models import ProjectExport
 from claude_client.render import render_project_metadata
+from claude_client.resources.projects import _memory_is_frozen
 
 ORG_ID = "org-uuid"
 OTHER_ORG_ID = "other-org-uuid"
@@ -297,6 +298,26 @@ def test_project_metadata_labels_frozen_legacy_memory(frozen, heading):
     )
 
     assert heading in render_project_metadata(export)
+
+
+@pytest.mark.parametrize(
+    ("memory_data", "frozen"),
+    [
+        ({"memory": "m", "controls": [], "updated_at": "x"}, False),
+        ({"memory": "m", "controls": [], "updated_at": "x", "project_import": None}, False),
+        (
+            {
+                "memory": "m",
+                "controls": [],
+                "updated_at": "x",
+                "project_import": {"status": "migrated"},
+            },
+            True,
+        ),
+    ],
+)
+def test_memory_is_frozen_handles_absent_null_and_migrated_import(memory_data, frozen):
+    assert _memory_is_frozen(memory_data) is frozen
 
 
 def test_project_pull_marks_migrated_memory_as_frozen(tmp_path):

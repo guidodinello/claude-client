@@ -21,7 +21,9 @@ logger = get_logger(__name__)
 
 def _memory_is_frozen(memory_data: MemoryDict) -> bool:
     """True once the project's memory moved to melange, leaving the legacy blob frozen."""
-    return memory_data.get("project_import", {}).get("status") == "migrated"
+    # `project_import` is present but null for projects that were never migrated.
+    project_import = memory_data.get("project_import") or {}
+    return project_import.get("status") == "migrated"
 
 
 def _resolve_project_slugs(

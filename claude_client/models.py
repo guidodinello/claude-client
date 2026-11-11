@@ -52,8 +52,9 @@ class MemoryDict(TypedDict):
     memory: str
     controls: list[str]
     updated_at: str
-    project_import: NotRequired[ProjectImportDict]
-    project_memory_mode: NotRequired[str]
+    # Present but null on projects that were never migrated (verified live).
+    project_import: NotRequired[ProjectImportDict | None]
+    project_memory_mode: NotRequired[str | None]
 
 
 class MelangeEntryDict(TypedDict):
