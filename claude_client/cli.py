@@ -206,6 +206,13 @@ def _account_pull_conversations(args: argparse.Namespace) -> None:
     print(f"Pulled {conversations} conversation(s) to {args.output_dir}/")
 
 
+def _account_pull_memory(args: argparse.Namespace) -> None:
+    client = _client(args)
+    results = client.memory.pull(args.output_dir, force=args.force, prune=args.prune)
+    _print_pull_results(results, "memory")
+    print(f"Pulled {len(results)} memory file(s) to {args.output_dir}/")
+
+
 # --------------------------------------------------------------- conversations
 
 
@@ -373,6 +380,15 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_force_flag(a_pull_conv)
     _add_prune_flag(a_pull_conv)
     a_pull_conv.set_defaults(func=_account_pull_conversations)
+
+    a_pull_mem = asub.add_parser(
+        "pull-memory",
+        help="Pull every org's melange memory files to a directory ({dir}/{org_id}/<path>)",
+    )
+    a_pull_mem.add_argument("output_dir")
+    _add_force_flag(a_pull_mem)
+    _add_prune_flag(a_pull_mem)
+    a_pull_mem.set_defaults(func=_account_pull_memory)
 
     # ---- conversations ----
     conversations = sub.add_parser("conversations", help="Conversation operations")

@@ -13,6 +13,7 @@ Python client for the Claude.ai web API — manage projects, sync files, and exp
 - Pull a full project to a local directory (project.md, docs/, conversations/) — incremental by default, `--force` to always rewrite, `--prune` to delete local files/dirs removed on the web
 - Back up images uploaded to conversations alongside them (`conversations/attachments/<conversation-uuid>/`), linked inline in the conversation's Markdown — only a compressed webp preview is available, not the original upload
 - Migrate a project's docs, conversations, and memory to another project — even across accounts/orgs
+- Back up melange memory (the per-entry project/profile memory) as a file tree per org
 - Run a Projects/Cowork scheduled task on demand (the "Ejecutar ahora" button)
 - Resource-namespaced Python client (`client.projects`, `client.docs`, `client.conversations`, `client.memory`, `client.orgs`, `client.scheduled_tasks`) and matching CLI
 
@@ -94,6 +95,10 @@ claude-client account pull ./all-projects/
 # Pull every standalone (non-project) conversation across every chat-capable org
 claude-client account pull-conversations ./standalone-convos/
 
+# Pull every org's melange memory files (the per-entry memory that replaced the single
+# project memory blob) to ./memory/{org_id}/<path>, incrementally by version
+claude-client account pull-memory ./memory/ [--force] [--prune]
+
 # Run a Projects/Cowork scheduled task immediately (not a Claude Code Routine —
 # see the note in Python usage below)
 claude-client scheduled-task run <task-id>
@@ -149,6 +154,15 @@ client.conversations.pull(project_id, "./local-convos/")
 # unscoped client, not one already pinned to a single org.
 standalone = client.conversations.list_standalone()  # this org only
 client.conversations.pull_standalone("./standalone-convos/")  # every chat-capable org
+
+# Melange memory — org-wide, path-addressed memory files (/profile.md, /topics/x.md,
+# /projects/{project_uuid}/topics/x.md, ...). Projects migrated to it keep only a frozen
+# legacy blob in memory.get(), labelled as such in project.md.
+entries = client.scoped(org_id).memory.list_entries()  # metadata only
+file = client.scoped(org_id).memory.read_entry(entries[0]["path"])  # file["content"]
+# Every chat-capable org (unscoped client), {out}/{org_id}/<path>, content verbatim.
+# Re-reads only entries whose version changed; orgs without melange (404) are skipped.
+client.memory.pull("./memory/", prune=True)
 
 # Project composite operations
 markdown = client.projects.export(project_id)  # single markdown string

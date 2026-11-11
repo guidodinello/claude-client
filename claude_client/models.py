@@ -33,10 +33,59 @@ class DocDict(TypedDict):
     estimated_token_count: NotRequired[int]
 
 
+class ProjectImportDict(TypedDict):
+    """Legacy-to-melange migration status of a project's memory."""
+
+    status: str
+    migrated_at: str | None
+    withheld_reason: str | None
+
+
 class MemoryDict(TypedDict):
+    """
+    Legacy memory endpoint response. Once a project's memory moved to melange
+    (`project_import.status == "migrated"`, `project_memory_mode == "melange"`), the
+    `memory`/`controls` fields are a frozen pre-migration snapshot; the live memory is
+    the per-entry melange tree (see `MelangeEntryDict`).
+    """
+
     memory: str
     controls: list[str]
     updated_at: str
+    project_import: NotRequired[ProjectImportDict]
+    project_memory_mode: NotRequired[str]
+
+
+class MelangeEntryDict(TypedDict):
+    """
+    One memory file from `melange/list` (metadata only, no content). Melange memory is
+    org-wide and path-addressed: `/profile.md`, `/topics/x.md`,
+    `/projects/{project_uuid}/topics/x.md`, ... `version` changes when the content does.
+    """
+
+    path: str
+    size_bytes: int
+    updated_at: str
+    memory_id: str
+    version: str
+    display_name: str
+    category_id: str | None
+    display_path_segments: list[str]
+    description: str
+    project_uuid: str | None
+
+
+class MelangeFileDict(TypedDict):
+    """
+    `melange/read` response: the entry's metadata plus `content`, the raw markdown file
+    (YAML frontmatter included). `memory_id`/`description` come back empty here, so take
+    them from `melange/list` instead. The parsed/derived fields are not typed.
+    """
+
+    path: str
+    version: str
+    updated_at: str
+    content: str
 
 
 class PaginationDict(TypedDict):
@@ -124,6 +173,9 @@ class ProjectExport:
     description: str
     instructions: str
     memory: str = ""
+    # True once the project's memory moved to melange: `memory` is then a frozen
+    # pre-migration snapshot, not the live memory.
+    memory_frozen: bool = False
     controls: list[str] = field(default_factory=list)
     docs: list[DocDict] = field(default_factory=list)
     conversations: list[ConversationDetailDict] = field(default_factory=list)
