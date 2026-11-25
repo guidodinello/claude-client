@@ -1,11 +1,11 @@
 repos:
-<<<<<<< before updating
-=======
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
+        exclude: ^tests/fixtures/  # captured responses, kept byte-for-byte
       - id: end-of-file-fixer
+        exclude: ^tests/fixtures/  # captured responses, kept byte-for-byte
       - id: check-yaml
       - id: check-toml
       - id: check-json
@@ -25,7 +25,6 @@ repos:
       - id: pyupgrade
         args: [--py313-plus]
 
->>>>>>> after updating
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.17.6
     hooks:
