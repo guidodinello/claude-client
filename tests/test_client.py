@@ -14,10 +14,12 @@ from claude_client import (
     ClaudeClient,
     CloudflareChallengeError,
     NotFoundError,
+    ProjectExport,
     UploadError,
+    is_archived,
 )
 from claude_client._manifest import MANIFEST_NAME
-from claude_client.render import conversation_to_markdown, slugify
+from claude_client.render import conversation_to_markdown, render_project_metadata, slugify
 
 ORG_ID = "org-uuid"
 OTHER_ORG_ID = "other-org-uuid"
@@ -2118,3 +2120,81 @@ def test_migrate_project_skips_update_when_source_has_no_metadata(mock_req):
 
     mock_req.put.assert_not_called()
     assert counts == {"docs": 1, "conversations": 0, "memory": 1}
+
+
+# ------------------------------------------------------------- archived projects
+
+ARCHIVED_AT = "2026-11-28T01:15:50.288098Z"
+
+
+@pytest.mark.parametrize(
+    ("project", "expected"),
+    [
+        ({**PROJECT_RESPONSE, "archived_at": ARCHIVED_AT}, True),
+        ({**PROJECT_RESPONSE, "archived_at": None}, False),
+        (PROJECT_RESPONSE, False),  # key absent
+    ],
+)
+def test_is_archived(project, expected):
+    assert is_archived(project) is expected
+
+
+@patch("claude_client._transport.requests")
+def test_projects_list_still_includes_archived_projects(mock_req, client):
+    """list() keeps returning archived projects (they still hold data); callers tell
+    them apart with is_archived()."""
+    active = {**PROJECTS_RESPONSE[0], "archived_at": None}
+    archived = {**PROJECTS_RESPONSE[0], "uuid": "archived-proj", "archived_at": ARCHIVED_AT}
+    mock_req.get.return_value = _mock_response([active, archived])
+
+    results = client.projects.list(org_id=ORG_ID)
+
+    assert results == [(ORG_ID, active), (ORG_ID, archived)]
+    assert [is_archived(p) for _, p in results] == [False, True]
+
+
+def test_render_project_metadata_marks_archived_project():
+    export = ProjectExport(
+        uuid=PROJECT_ID, name="My Project", description="", instructions="", archived_at=ARCHIVED_AT
+    )
+
+    assert render_project_metadata(export) == f"# My Project\n\n**Archived:** {ARCHIVED_AT}\n"
+
+
+def test_render_project_metadata_active_project_has_no_archived_line():
+    """Active projects render byte-identically to before the flag existed, so existing
+    backups don't churn."""
+    export = ProjectExport(uuid=PROJECT_ID, name="My Project", description="d", instructions="")
+
+    assert render_project_metadata(export) == "# My Project\n\n## Description\n\nd\n"
+
+
+@patch("claude_client._transport.requests")
+def test_projects_export_data_carries_archived_at(mock_req, client):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response({**PROJECT_RESPONSE, "archived_at": ARCHIVED_AT}),
+        _mock_response([]),  # docs
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response({"data": [], "pagination": {"has_more": False}}),  # conversations
+    ]
+
+    export = client.projects.export_data(PROJECT_ID)
+
+    assert export.archived_at == ARCHIVED_AT
+
+
+@patch("claude_client._transport.requests")
+def test_projects_pull_writes_archived_line(mock_req, client, tmp_path):
+    mock_req.get.side_effect = [
+        _mock_response(ORGS_RESPONSE),
+        _mock_response({**PROJECT_RESPONSE, "archived_at": ARCHIVED_AT}),
+        _mock_response(MEMORY_RESPONSE),
+        _mock_response([DOC_FULL]),
+        _mock_response(CONV_PAGE_RESPONSE),
+        _mock_response(CONVERSATION_DETAIL),
+    ]
+
+    result = client.projects.pull(PROJECT_ID, tmp_path / "export")
+
+    assert f"**Archived:** {ARCHIVED_AT}\n" in (result.path / "project.md").read_text()

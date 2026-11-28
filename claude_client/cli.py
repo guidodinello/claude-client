@@ -11,6 +11,7 @@ from logger import init_logging
 from .client import ClaudeClient
 from .exceptions import AuthError, NotFoundError, UploadError
 from .migrate import migrate_project
+from .models import is_archived
 from .render import conversation_to_markdown
 
 _PROJECT_URL_RE = re.compile(r"([0-9a-f-]{36})/?$", re.IGNORECASE)
@@ -62,7 +63,8 @@ def _project_list(args: argparse.Namespace) -> None:
         print("No projects found.")
         return
     for org_id, p in projects:
-        print(f"{org_id}  {p['uuid']}  {p['name']}")
+        suffix = "  archived" if is_archived(p) else ""
+        print(f"{org_id}  {p['uuid']}  {p['name']}{suffix}")
 
 
 def _project_show(args: argparse.Namespace) -> None:
@@ -71,6 +73,8 @@ def _project_show(args: argparse.Namespace) -> None:
     print(f"Name: {project.get('name', '')}")
     print(f"Description: {project.get('description', '')}")
     print(f"Instructions: {project.get('prompt_template', '')}")
+    if is_archived(project):
+        print(f"Archived: {project['archived_at']}")
 
 
 def _project_export(args: argparse.Namespace) -> None:

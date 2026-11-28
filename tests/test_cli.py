@@ -3,7 +3,7 @@
 import argparse
 from unittest.mock import MagicMock, patch
 
-from claude_client.cli import _client
+from claude_client.cli import _client, _project_list, _project_show
 
 ORG_ID = "org-uuid"
 OTHER_ORG_ID = "other-org-uuid"
@@ -65,3 +65,32 @@ def test_client_multi_org_account_resolves_owning_org(mock_req):
     client = _client(_args(), PROJECT_ID)
 
     assert client.org_id == OTHER_ORG_ID
+
+
+ARCHIVED_AT = "2026-11-28T01:15:50.288098Z"
+ACTIVE = {"uuid": PROJECT_ID, "name": "My Project", "archived_at": None}
+ARCHIVED = {"uuid": "old-proj", "name": "Old Project", "archived_at": ARCHIVED_AT}
+
+
+@patch("claude_client.cli._client")
+def test_project_list_marks_only_archived_rows(mock_client, capsys):
+    mock_client.return_value.projects.list.return_value = [(ORG_ID, ACTIVE), (ORG_ID, ARCHIVED)]
+
+    _project_list(_args())
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"{ORG_ID}  {PROJECT_ID}  My Project",
+        f"{ORG_ID}  old-proj  Old Project  archived",
+    ]
+
+
+@patch("claude_client.cli._client")
+def test_project_show_prints_archived_only_when_archived(mock_client, capsys):
+    project = {**ARCHIVED, "description": "", "prompt_template": ""}
+    mock_client.return_value.projects.get.return_value = project
+    _project_show(argparse.Namespace(token=TOKEN, project_id="old-proj"))
+    assert f"Archived: {ARCHIVED_AT}" in capsys.readouterr().out
+
+    mock_client.return_value.projects.get.return_value = {**project, "archived_at": None}
+    _project_show(argparse.Namespace(token=TOKEN, project_id="old-proj"))
+    assert "Archived" not in capsys.readouterr().out
