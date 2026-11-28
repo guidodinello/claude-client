@@ -172,10 +172,14 @@ def conversation_filename(conv: ConversationDetailDict) -> str:
 
 
 def render_project_metadata(export: ProjectExport) -> str:
-    """Render the project header fields (name, description, instructions, memory, controls)."""
+    """Render the project header (name, archived, description, instructions, memory, controls)."""
     sections: list[str] = []
 
     sections.append(f"# {export.name}\n")
+
+    # Only archived projects get the line, so active projects' project.md is unchanged.
+    if export.archived_at:
+        sections.append(f"**Archived:** {export.archived_at}\n")
 
     if export.description:
         sections.append(f"## Description\n\n{export.description}\n")

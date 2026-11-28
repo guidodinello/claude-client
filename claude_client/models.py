@@ -10,12 +10,24 @@ class OrgDict(TypedDict):
 
 
 class ProjectDict(TypedDict):
+    """
+    archived_at is an ISO timestamp on archived projects (verified live on the list
+    endpoint). Typed NotRequired and nullable because active projects may send null or
+    omit it; read it through `is_archived()` rather than truthiness at call sites.
+    """
+
     uuid: str
     name: str
     description: str
     prompt_template: str
     created_at: str
     updated_at: str
+    archived_at: NotRequired[str | None]
+
+
+def is_archived(project: ProjectDict) -> bool:
+    """True if the project is archived on claude.ai (it still holds data and is listed)."""
+    return bool(project.get("archived_at"))
 
 
 class DocDict(TypedDict):
@@ -177,6 +189,8 @@ class ProjectExport:
     # True once the project's memory moved to melange: `memory` is then a frozen
     # pre-migration snapshot, not the live memory.
     memory_frozen: bool = False
+    # ISO timestamp the project was archived at, None for active projects.
+    archived_at: str | None = None
     controls: list[str] = field(default_factory=list)
     docs: list[DocDict] = field(default_factory=list)
     conversations: list[ConversationDetailDict] = field(default_factory=list)
