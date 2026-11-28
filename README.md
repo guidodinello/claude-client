@@ -7,6 +7,7 @@ Python client for the Claude.ai web API — manage projects, sync files, and exp
 ## Features
 
 - List, show, and update projects — across every org on the account by default
+- Tell archived projects apart: `list()` still returns them (they still hold data), `is_archived(project)` / the `archived_at` field mark them, the CLI `project list` adds an `archived` column, and a pulled `project.md` gets an `**Archived:** <timestamp>` line under the title (active projects get none)
 - List, get, push (upsert), remove, and pull knowledge docs
 - List, get, and pull conversations as Markdown files
 - Export a full project to a single Markdown file (title, description, instructions, memory, docs, conversations)
@@ -115,6 +116,13 @@ client = ClaudeClient()  # reads CLAUDE_SESSION_TOKEN from env
 
 # Projects — list() spans every chat-capable org by default, returning (org_id, project) pairs
 projects = client.projects.list()
+
+# Archived projects are included; tell them apart with is_archived() (or project["archived_at"],
+# an ISO timestamp, null/absent when active). project.md of an archived project carries an
+# `**Archived:** <archived_at>` line right under the title.
+from claude_client import is_archived
+
+active = [(org_id, p) for org_id, p in projects if not is_archived(p)]
 
 # On a multi-org account, every other project-scoped call below needs a pinned org —
 # calling them straight off an unpinned multi-org client raises AmbiguousOrgError
